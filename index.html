@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>弓道 的中＆射癖アナライザー</title>
+<style>
+:root{--bg:#f4f1ea;--card:#fff;--primary:#1f3a52;--head:#1f3a52;--accent:#b83b3b;--text:#222;--muted:#666;--border:#ddd6c7;--soft:#f0f4f8;--soft2:#fafafa;--info:#1b4f72;--chk:#eef6fc;--chkb:#85c1e9;--btn:#fff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181c;--card:#1f2429;--primary:#3d6a94;--head:#9cc3e6;--text:#e8e6e1;--muted:#a3a8ad;--border:#363d44;--soft:#232c36;--soft2:#252b31;--info:#9cc9ea;--chk:#1d2e3d;--chkb:#3d6a94;--btn:#2a3138}}
+:root[data-theme="dark"]{--bg:#15181c;--card:#1f2429;--primary:#3d6a94;--head:#9cc3e6;--text:#e8e6e1;--muted:#a3a8ad;--border:#363d44;--soft:#232c36;--soft2:#252b31;--info:#9cc9ea;--chk:#1d2e3d;--chkb:#3d6a94;--btn:#2a3138}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+.container{max-width:480px;margin:0 auto}
+header{text-align:center;margin-bottom:12px}
+header h1{font-size:1.2rem;margin:0 0 4px;color:var(--head)}
+header p{font-size:.78rem;color:var(--muted);margin:0}
+h2{font-size:1rem;margin:0 0 8px;color:var(--head)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(0,0,0,.04)}
+.status-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.next-badge{background:var(--primary);color:#fff;padding:4px 10px;border-radius:999px;font-size:.85rem;font-weight:bold}
+.stats-mini{font-size:.9rem;font-weight:bold;color:var(--head)}
+.target-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:.8rem}
+.btn-group{display:flex;gap:6px}
+button{cursor:pointer;border:1px solid var(--border);background:var(--btn);color:var(--text);border-radius:8px;padding:6px 10px;font-size:.8rem;font-weight:bold;transition:.15s}
+button:active{transform:scale(.97)}
+button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+button.danger{color:#c0392b;border-color:#e6b0aa}
+button.pri{background:var(--primary);color:#fff;border-color:var(--primary)}
+.canvas-wrap{position:relative;width:100%;aspect-ratio:1/1;background:#cbb89d;border-radius:10px;overflow:hidden;border:2px solid #a89478;touch-action:manipulation}
+canvas{width:100%;height:100%;display:block;cursor:crosshair}
+.hint-text{font-size:.75rem;color:var(--muted);text-align:center;margin:6px 0 0}
+.action-row{display:flex;gap:8px;margin-top:10px}
+.action-row button{flex:1;padding:8px}
+.video-row{display:flex;gap:8px;margin-top:8px}
+.video-row button{flex:1;padding:10px 6px;font-size:.85rem}
+.video-target{font-size:.75rem;color:var(--muted);text-align:center;margin:6px 0 0}
+.diag-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.diag-header h2{margin:0}
+.diag-summary{background:var(--soft);border-left:4px solid var(--primary);padding:10px;border-radius:6px;font-size:.88rem;margin-bottom:10px}
+.diag-tag{display:inline-block;background:var(--accent);color:#fff;font-size:.75rem;font-weight:bold;padding:2px 8px;border-radius:4px;margin-bottom:4px}
+.diag-tag.good{background:#2e7d32}
+.check-list{margin:8px 0 0;padding:0;list-style:none}
+.check-item{border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:.84rem;background:var(--soft2)}
+.check-item label{display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-weight:bold}
+.check-advice{margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);color:var(--info);font-size:.8rem;display:none}
+.check-item.checked{background:var(--chk);border-color:var(--chkb)}
+.check-item.checked .check-advice{display:block}
+video{width:100%;max-height:260px;background:#000;border-radius:8px;display:none}
+.speed-controls{display:none;justify-content:center;gap:6px;margin-top:8px}
+.vinfo{font-size:.78rem;color:var(--muted);margin-bottom:6px}
+.history-list{max-height:320px;overflow-y:auto;font-size:.82rem}
+.history-row{padding:8px 4px;border-bottom:1px solid var(--border)}
+.history-top{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.history-btns{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.history-btns button{padding:5px 9px;font-size:.76rem}
+.hit-mark{font-weight:bold;color:#e0524f}
+.miss-mark{font-weight:bold;color:var(--muted)}
+.vtag{font-size:.72rem;color:var(--muted)}
+.mode-badge{display:inline-block;font-size:.75rem;font-weight:bold;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--head);border:1px solid var(--border)}
+.mode-badge.match{background:#b8860b;color:#fff;border-color:#b8860b}
+.card.match{border-color:#b8860b;box-shadow:0 0 0 2px rgba(184,134,11,.25)}
+.sess-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap}
+.sess-row input[type=date]{flex:1;min-width:140px}
+input[type=date],input[type=text]{font:inherit;font-size:.9rem;padding:7px 8px;border:1px solid var(--border);border-radius:8px;background:var(--btn);color:var(--text)}
+#sessTitle{width:100%;margin-bottom:8px}
+.match-sum{margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--soft);border-left:4px solid #b8860b;font-size:.85rem}
+.day-head{display:flex;justify-content:space-between;font-weight:bold;font-size:.82rem;padding:6px 4px 4px;margin-top:6px;border-bottom:2px solid var(--border);color:var(--head)}
+.sess-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid var(--border);font-size:.82rem}
+.sess-item.cur{background:var(--chk)}
+.nav{display:flex;gap:6px;margin-bottom:12px;position:sticky;top:0;z-index:20;background:var(--bg);padding:8px 0}
+.nav button{flex:1;padding:10px 4px;font-size:.88rem}
+.team-bar{font-size:.78rem;color:var(--muted);text-align:center;margin:-4px 0 10px}
+.pg-trend,.pg-rank{display:none}
+body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank{display:block}
+body[data-pg=trend] .pg-rec,body[data-pg=rank] .pg-rec{display:none}
+.tabs{flex-wrap:wrap}
+.stand-tabs{overflow-x:auto;margin-bottom:6px;padding-bottom:2px}
+.stand-tabs button{flex:none}
+.ln{fill:none;stroke:var(--head);stroke-width:2}
+.dt{fill:var(--accent)}
+.tx{fill:var(--muted);font-size:9px}
+.gl{stroke:var(--border);stroke-width:1}
+.rank-row{display:flex;align-items:center;gap:8px;padding:8px 4px;border-bottom:1px solid var(--border);font-size:.86rem}
+.rank-no{width:2.4em;text-align:center;font-weight:bold}
+.rank-main{flex:1}
+.rank-val{font-weight:bold;color:var(--head);text-align:right}
+.tbl{width:100%;border-collapse:collapse;font-size:.82rem}
+.tbl th,.tbl td{padding:5px 4px;border-bottom:1px solid var(--border);text-align:right}
+.tbl th:first-child,.tbl td:first-child{text-align:left}
+.dt{fill:var(--head)}
+.ln2{fill:none;stroke:#d98e04;stroke-width:2}
+.dt2{fill:#d98e04}
+.bar{fill:var(--chkb);opacity:.85}
+select{font:inherit;font-size:.9rem;padding:7px 8px;border:1px solid var(--border);border-radius:8px;background:var(--btn);color:var(--text);max-width:100%}
+.rank-row[data-uid]{cursor:pointer}
+.rank-row.mine{background:var(--chk);border-radius:8px}
+.bar-track{height:6px;border-radius:3px;background:var(--border);margin:4px 0;overflow:hidden}
+.bar-fill{height:100%;background:var(--primary)}
+.mine .bar-fill{background:#d98e04}
+.legend{font-size:.76rem;color:var(--muted);text-align:center;margin:4px 0 8px}
+input[type=file]{display:none}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🏹 弓道 的中＆射癖アナライザー</h1>
+    <p>的（または周囲の安土）をタップして矢所を記録</p>
+  </header>
+
+  <nav class='nav' id='nav'>
+    <button data-pg='rec' class='active'>📝 記録</button>
+    <button data-pg='trend'>📈 推移</button>
+    <button data-pg='rank'>🏅 ランキング</button>
+  </nav>
+  <div class='team-bar' id='teamBar'></div>
+  <div class='pg-trend' id='trendPage'></div>
+  <div class='pg-rank' id='rankPage'></div>
+
+  <div class="card">
+    <div class="diag-header"><h2>📅 記録セッション</h2><span class="mode-badge" id="modeBadge"></span></div>
+    <div class="sess-row">
+      <input type="date" id="sessDate" />
+      <div class="btn-group">
+        <button id="btnPractice" onclick="setSessType('practice')">🏹 練習</button>
+        <button id="btnMatch" onclick="setSessType('match')">🏆 試合</button>
+      </div>
+    </div>
+    <input type="text" id="sessTitle" placeholder="メモ・試合名（例：秋季大会 予選）" maxlength="40" />
+    <div class="sess-row" style="margin-bottom:0">
+      <button class="pri" onclick="newSession()">＋ 新規セッション</button>
+      <button class="danger" onclick="deleteSession()">このセッションを削除</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status-bar">
+      <span class="next-badge" id="nextShotLabel">第1立・1本目（甲矢）</span>
+      <span class="stats-mini" id="hitRateLabel">的中: 0/0 (0%)</span>
+    </div>
+    <div class="target-controls">
+      <span>的の種類：</span>
+      <div class="btn-group">
+        <button id="btnKasumi" class="active" onclick="setTargetType('kasumi')">霞的</button>
+        <button id="btnHoshi" onclick="setTargetType('hoshi')">星的</button>
+      </div>
+    </div>
+    <div class="canvas-wrap"><canvas id="targetCanvas" width="680" height="680"></canvas></div>
+    <p class="hint-text">※赤数字＝中り（◯）／紺数字＝外れ（×）。濃い色が現在の立（直近4本）</p>
+    <div id="matchSummary"></div>
+    <div class="action-row">
+      <button onclick="undoShot()">↩ 1本戻す</button>
+      <button class="danger" onclick="clearAll()">🗑 全リセット</button>
+    </div>
+    <div class="video-row">
+      <button class="pri" onclick="pickVideo(null,false)">📎 動画を連携</button>
+      <button class="pri" onclick="pickVideo(null,true)">🎥 今から撮影</button>
+    </div>
+    <p class="video-target" id="videoTarget">直近の射に動画を紐づけます</p>
+  </div>
+
+  <div class="card">
+    <div class="diag-header">
+      <h2>🔍 射癖・矢所診断</h2>
+      <div class="btn-group">
+        <button id="btnScopeRecent" class="active" onclick="setDiagScope('recent')">直近4本</button>
+        <button id="btnScopeAll" onclick="setDiagScope('all')">この回</button>
+        <button id="btnScopeTotal" onclick="setDiagScope('total')">通算</button>
+      </div>
+    </div>
+    <div id="diagContainer"></div>
+  </div>
+
+  <div class="card">
+    <h2>📝 記録履歴（選択中のセッション）</h2>
+    <div class="btn-group stand-tabs" id="histTabs"></div>
+    <div class="history-list" id="historyList"></div>
+  </div>
+
+  <div class="card">
+    <h2>🎬 射形動画のスロー確認</h2>
+    <div class="vinfo" id="currentVideoInfo">動画は上の記録履歴から登録・再生できます（このブラウザ内に保存・外部送信なし）。</div>
+    <video id="videoPlayer" controls playsinline></video>
+    <div class="speed-controls" id="speedControls">
+      <button data-rate="0.25">0.25x スロー</button>
+      <button data-rate="0.5">0.5x スロー</button>
+      <button data-rate="1" class="active">1.0x 標準</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🗓 日付別の記録</h2>
+    <div class="btn-group" style="margin-bottom:8px">
+      <button id="flt_all" class="active" onclick="setSessFilter('all')">すべて</button>
+      <button id="flt_practice" onclick="setSessFilter('practice')">🏹 練習</button>
+      <button id="flt_match" onclick="setSessFilter('match')">🏆 試合</button>
+    </div>
+    <div class="history-list" id="sessList"></div>
+  </div>
+
+  </div>
+</div>
+
+<input type="file" id="fileSelect" accept="video/*" />
+<input type="file" id="fileCapture" accept="video/*" capture="environment" />
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+const STORAGE_KEY='kyudo_proto_shots_v1';
+const canvas=document.getElementById('targetCanvas');
+const ctx=canvas.getContext('2d');
+const CENTER=340, TARGET_R=145;
+let targetType='kasumi', diagScope='recent', pendingShotId=null;
+const STORE_KEY='kyudo_sessions_v2';
+let sessFilter='all';
+let histStand=null;
+function dstr(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function todayStr(){return dstr(new Date());}
+function dateOfId(id){const t=Number(String(id).split('_')[0]);return t>0?dstr(new Date(t)):todayStr();}
+function newSess(date,type){return {id:'s'+Date.now()+Math.random().toString(36).slice(2,6),date:date||todayStr(),type:type||'practice',title:'',shots:[]};}
+function loadStore(){
+  try{
+    const r=localStorage.getItem(STORE_KEY);
+    if(r){const o=JSON.parse(r);if(o&&Array.isArray(o.sessions)&&o.sessions.length)return o;}
+    const old=localStorage.getItem(STORAGE_KEY);
+    if(old){
+      const a=JSON.parse(old);
+      if(Array.isArray(a)&&a.length){
+        const g={};
+        a.forEach(s=>{const d=dateOfId(s.id);(g[d]=g[d]||[]).push(s);});
+        const sessions=Object.keys(g).sort().map(d=>{
+          const se=newSess(d,'practice');
+          se.shots=g[d].map((s,i)=>Object.assign({},s,{stand:Math.floor(i/4)+1,arrowNum:(i%4)+1,arrowType:i%2===0?'甲矢':'乙矢'}));
+          return se;
+        });
+        return {sessions,currentId:sessions[sessions.length-1].id};
+      }
+    }
+  }catch(e){}
+  const s=newSess();return {sessions:[s],currentId:s.id};
+}
+function curSession(){return store.sessions.find(s=>s.id===store.currentId)||store.sessions[0];}
+let store=loadStore();
+{
+  store.currentId=curSession().id;
+  const cs=curSession();
+  if(cs.date!==todayStr()&&cs.shots.length){const ns=newSess();store.sessions.push(ns);store.currentId=ns.id;}
+}
+let shots=curSession().shots;
+const videoUrlMap={};
+
+/* 動画はIndexedDB（端末内）に保存 */
+let _db=null;
+function dbOpen(){return new Promise(res=>{try{const r=indexedDB.open('kyudo_videos',1);r.onupgradeneeded=()=>r.result.createObjectStore('v');r.onsuccess=()=>{_db=r.result;res(_db);};r.onerror=()=>res(null);}catch(e){res(null);}});}
+function dbTx(mode,fn){return new Promise((res,rej)=>{if(!_db)return rej(new Error('nodb'));try{const t=_db.transaction('v',mode);const r=fn(t.objectStore('v'));t.oncomplete=()=>res(r&&r.result);t.onerror=()=>rej(t.error);t.onabort=()=>rej(t.error);}catch(e){rej(e);}});}
+const dbPut=(k,b)=>dbTx('readwrite',s=>s.put(b,k));
+const dbDel=k=>dbTx('readwrite',s=>s.delete(k)).catch(()=>{});
+const dbClear=()=>dbTx('readwrite',s=>s.clear()).catch(()=>{});
+
+function loadShots(){
+  try{const r=localStorage.getItem(STORAGE_KEY);const a=r?JSON.parse(r):[];return Array.isArray(a)?a:[];}catch(e){return [];}
+}
+function saveShots(){try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}catch(e){}try{scheduleShare();}catch(e){}}
+
+function setTargetType(t){
+  targetType=t;
+  document.getElementById('btnKasumi').classList.toggle('active',t==='kasumi');
+  document.getElementById('btnHoshi').classList.toggle('active',t==='hoshi');
+  draw();
+}
+function setDiagScope(s){
+  diagScope=s;
+  document.getElementById('btnScopeRecent').classList.toggle('active',s==='recent');
+  document.getElementById('btnScopeAll').classList.toggle('active',s==='all');
+  document.getElementById('btnScopeTotal').classList.toggle('active',s==='total');
+  updateDiagnosis();
+}
+
+function draw(){
+  if(!ctx)return;
+  ctx.clearRect(0,0,680,680);
+  ctx.fillStyle='#cbb89d';ctx.fillRect(0,0,680,680);
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,0.35)';ctx.lineWidth=2;ctx.setLineDash([8,8]);
+  ctx.beginPath();
+  ctx.moveTo(CENTER,20);ctx.lineTo(CENTER,660);ctx.moveTo(20,CENTER);ctx.lineTo(660,CENTER);ctx.stroke();
+  ctx.beginPath();ctx.arc(CENTER,CENTER,TARGET_R*2,0,Math.PI*2);ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle='rgba(50,40,30,0.65)';ctx.font='bold 24px sans-serif';
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('▲ 上',CENTER,34);ctx.fillText('▼ 下',CENTER,646);
+  ctx.textAlign='left';ctx.fillText('◀ 後ろ(左)',18,CENTER-22);
+  ctx.textAlign='right';ctx.fillText('前(右) ▶',662,CENTER-22);
+
+  ctx.beginPath();ctx.arc(CENTER+5,CENTER+6,TARGET_R,0,Math.PI*2);
+  ctx.fillStyle='rgba(0,0,0,0.22)';ctx.fill();
+
+  if(targetType==='kasumi'){
+    [[18,'#1c1c1c'],[14.7,'#fff'],[11.7,'#1c1c1c'],[10.2,'#fff'],[7.2,'#1c1c1c'],[3.6,'#fff']].forEach(([cm,c])=>{
+      ctx.beginPath();ctx.arc(CENTER,CENTER,TARGET_R*(cm/18),0,Math.PI*2);ctx.fillStyle=c;ctx.fill();
+    });
+  }else{
+    ctx.beginPath();ctx.arc(CENTER,CENTER,TARGET_R,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+    ctx.beginPath();ctx.arc(CENTER,CENTER,TARGET_R/3,0,Math.PI*2);ctx.fillStyle='#1c1c1c';ctx.fill();
+  }
+  ctx.beginPath();ctx.arc(CENTER,CENTER,TARGET_R,0,Math.PI*2);
+  ctx.lineWidth=4;ctx.strokeStyle='#8b6f47';ctx.stroke();
+
+  const rs=Math.max(0,shots.length-4);
+  shots.forEach((s,idx)=>{
+    const px=CENTER+s.nx*TARGET_R, py=CENTER-s.ny*TARGET_R;
+    const recent=idx>=rs;
+    ctx.save();
+    ctx.globalAlpha=recent?1:0.35;
+    ctx.beginPath();ctx.arc(px,py,recent?15:10,0,Math.PI*2);
+    ctx.fillStyle=s.hit?'#d32f2f':'#1f3a52';ctx.fill();
+    ctx.lineWidth=3;ctx.strokeStyle='#fff';ctx.stroke();
+    if(recent){
+      ctx.fillStyle='#fff';ctx.font='bold 17px sans-serif';
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(String((idx%4)+1),px,py+1);
+    }
+    ctx.restore();
+  });
+}
+
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)*canvas.width/r.width;
+  const cy=(e.clientY-r.top)*canvas.height/r.height;
+  const nx=(cx-CENTER)/TARGET_R, ny=(CENTER-cy)/TARGET_R;
+  const dist=Math.hypot(nx,ny);
+  const idx=shots.length, arrowNum=(idx%4)+1;
+  histStand=null;
+  shots.push({
+    id:Date.now()+'_'+idx,
+    stand:Math.floor(idx/4)+1,
+    arrowNum,
+    arrowType:arrowNum%2===1?'甲矢':'乙矢',
+    nx:Number(nx.toFixed(3)),ny:Number(ny.toFixed(3)),dist:Number(dist.toFixed(3)),
+    hit:dist<=1,videoName:null
+  });
+  saveShots();renderAll();
+});
+
+function undoShot(){
+  if(!shots.length)return;
+  const s=shots.pop();
+  dbDel(s.id);
+  if(videoUrlMap[s.id]){URL.revokeObjectURL(videoUrlMap[s.id]);delete videoUrlMap[s.id];}
+  saveShots();renderAll();
+}
+function clearAll(){
+  if(!shots.length)return;
+  if(!confirm('このセッションの記録をすべてリセットしますか？（動画も削除されます）'))return;
+  dropVideos(shots);
+  
+  
+  
+  shots.length=0;saveShots();renderAll();
+}
+
+function updateDiagnosis(){
+  const c=document.getElementById('diagContainer');
+  const pool=store.sessions.flatMap(x=>x.shots);
+  if(!(diagScope==='total'?pool:shots).length){
+    c.innerHTML='<div class="diag-summary">矢所を記録すると、偏りやバラつきから射癖の候補を診断します。</div>';
+    return;
+  }
+  const ts=diagScope==='recent'?shots.slice(-4):(diagScope==='total'?pool:shots);
+  const n=ts.length;
+  const avgX=ts.reduce((a,b)=>a+b.nx,0)/n, avgY=ts.reduce((a,b)=>a+b.ny,0)/n;
+  const avgDist=Math.hypot(avgX,avgY);
+  const spread=ts.reduce((a,b)=>a+Math.hypot(b.nx-avgX,b.ny-avgY),0)/n;
+
+  const haya=ts.filter(s=>s.arrowType==='甲矢'), otoya=ts.filter(s=>s.arrowType==='乙矢');
+  let ho='';
+  if(haya.length&&otoya.length){
+    const hX=haya.reduce((a,b)=>a+b.nx,0)/haya.length, oX=otoya.reduce((a,b)=>a+b.nx,0)/otoya.length;
+    if(Math.abs(hX-oX)>=0.45){
+      ho=`<div style="margin-top:6px;font-size:.8rem;color:#a569bd;">💡 <b>甲矢・乙矢の差：</b>甲矢は${hX>oX?'前(右)':'後ろ(左)'}、乙矢は${oX>hX?'前(右)':'後ろ(左)'}へ飛びやすい傾向があります（羽の回転方向や手の内の変化が影響しやすいです）。</div>`;
+    }
+  }
+  const dp=[];
+  if(avgX>0.35)dp.push('前（右）');else if(avgX<-0.35)dp.push('後ろ（左）');
+  if(avgY>0.35)dp.push('上');else if(avgY<-0.35)dp.push('下');
+  const dirLabel=dp.length?dp.join('・'):'中心付近';
+  const hitCount=ts.filter(s=>s.hit).length, allHit=hitCount===n;
+
+  let checks=[],badge='',good=false;
+  if(n>=2&&spread>0.75){
+    badge='上下左右に散らばり傾向';
+    checks=[
+      {q:'毎射で矢束（引きの深さ）や会の長さが変わっていませんか？',a:'毎回同じ「会」の伸び合いを作り、3〜5秒の十分な保ちを意識しましょう。'},
+      {q:'離れで馬手や弓手が緩んで（びくついて）いませんか？',a:'緩み離れは矢所が最も安定しません。左右の押し引きの張力を残したまま鋭く離れましょう。'},
+      {q:'足踏みや胴造りの軸が前後左右にブレていませんか？',a:'腰・丹田に重心を落とし、真っ直ぐな軸の上で引くことを意識しましょう。'}
+    ];
+  }else if(avgDist<=0.35&&spread<=0.5){
+    badge='非常に安定（芯に集中）';good=true;
+    checks=[{q:'現在の良い感覚（手の内・引き分け・伸び合い）を言語化できていますか？',a:'今の「中る感覚」をメモや動画で残しておくと、調子を崩した時の基準になります！'}];
+  }else{
+    badge=`${dirLabel}への偏り${allHit?'（中っているが癖の予兆）':''}`;
+    if(avgX>0.35)checks.push(
+      {q:'角見（つのみ）が効かず、弓返りが弱くなっていませんか？',a:'大三から会にかけて小指・薬指・中指を締め、親指の付け根（拇指球）で的の中心を押す意識を持ちましょう。'},
+      {q:'離れで弓手（左手）が的側に緩んだり、馬手（右手）が手先で離れていませんか？',a:'押手が負けると矢は前に飛びます。矢筋に沿って真っ直ぐ押し切る意識を持ちましょう。'},
+      {q:'物見（顔の向き）が浅く、前狙いになっていませんか？',a:'顎を引き、しっかり的を見ることで狙いのズレを防げます。'});
+    if(avgX<-0.35)checks.push(
+      {q:'上押し（親指側の上向きの力）が強すぎませんか？',a:'弓手を上にこじると矢は後ろへ飛びます。平押し（水平の押し）を意識しましょう。'},
+      {q:'引きすぎ、または引き分けで弓手が早く降りてしまっていませんか？',a:'左右均等のリズムで引き分け、頬付け・口割りの位置が後ろに流れすぎないよう確認しましょう。'},
+      {q:'右肘が背後に十分回らず、手先で引いていませんか？',a:'肩甲骨を寄せるように引き収め、矢筋の延長線上に右肘を収めましょう。'});
+    if(avgY>0.35)checks.push(
+      {q:'弓手の肩（肩根）が上がっていませんか？',a:'打起し〜引き分けで肩を落とし、肩甲骨を下げる意識（肩を沈める）を持ちましょう。'},
+      {q:'口割りが高くなっていたり、離れで弓手を上に跳ね上げていませんか？',a:'口割りは口角の高さに保ち、離れで左拳が上に跳ねないよう的の中心に向かって押しましょう。'});
+    if(avgY<-0.35)checks.push(
+      {q:'引き分けが浅く、矢束が不足していませんか？（早気含む）',a:'会での伸び合いが足りないと矢勢が落ちて下に外れます。矢尺いっぱいまで引き切りましょう。'},
+      {q:'離れで弓手が下がる（押しが下に抜ける）癖がありませんか？',a:'離れの瞬間に左腕が下がらないよう、的の高さを維持したまま押し切りましょう。'});
+  }
+  const ch=checks.map((x,i)=>`<li class="check-item" id="chkItem_${i}"><label><input type="checkbox" onchange="toggleCheck(${i},this.checked)" /><span>${x.q}</span></label><div class="check-advice">✅ <b>対策ポイント：</b>${x.a}</div></li>`).join('');
+  c.innerHTML=`<div class="diag-summary"><span class="diag-tag ${good?'good':''}">${badge}</span><br>対象 ${n}本（的中 ${hitCount}本）の矢所を分析しました。${allHit&&!good?'<br><span style="color:#e0524f;">※すべて中っていますが、的の端に偏っているため大会や距離変化で外れやすいサインです。</span>':''}${ho}</div><div style="font-size:.82rem;font-weight:bold;color:var(--muted);">▼ 当てはまる項目にチェックして原因を絞り込む：</div><ul class="check-list">${ch}</ul>`;
+}
+function toggleCheck(i,v){const el=document.getElementById('chkItem_'+i);if(el)el.classList.toggle('checked',v);}
+
+/* ---- 動画連携 ---- */
+function shotLabel(s){return `第${s.stand}立・${s.arrowNum}本目（${s.arrowType} / ${s.hit?'◯':'×'}）`;}
+
+// shotId=null なら直近の射。capture=true でカメラ撮影
+function pickVideo(shotId,capture){
+  if(!shots.length){alert('先に的をタップして1本以上記録してください！');return;}
+  pendingShotId=shotId||shots[shots.length-1].id;
+  document.getElementById(capture?'fileCapture':'fileSelect').click();
+}
+async function onVideoPicked(e){
+  const file=e.target.files[0];
+  e.target.value='';
+  if(!file)return;
+  const s=shots.find(x=>x.id===pendingShotId);
+  if(!s)return;
+  if(videoUrlMap[s.id])URL.revokeObjectURL(videoUrlMap[s.id]);
+  videoUrlMap[s.id]=URL.createObjectURL(file);
+  s.videoName=file.name||'撮影動画';
+  try{await dbPut(s.id,file);}catch(err){alert('端末への動画保存に失敗しました（容量不足など）。このままでも今回は再生できますが、再読み込みで消えます。');}
+  saveShots();
+  playVideoById(s.id);
+  renderHistory();renderVideoTarget();
+}
+document.getElementById('fileSelect').addEventListener('change',onVideoPicked);
+document.getElementById('fileCapture').addEventListener('change',onVideoPicked);
+
+function playVideoById(id){
+  const s=shots.find(x=>x.id===id), url=videoUrlMap[id];
+  if(!s)return;
+  if(!url){
+    alert('この射の動画は端末に見つかりませんでした。\n記録履歴の「📎 登録」から再度動画を選択してください。');
+    return;
+  }
+  const p=document.getElementById('videoPlayer');
+  document.getElementById('currentVideoInfo').textContent='再生中：'+shotLabel(s)+'　'+s.videoName;
+  p.src=url;p.style.display='block';
+  document.getElementById('speedControls').style.display='flex';
+  p.play().catch(()=>{});
+  p.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+document.getElementById('speedControls').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  document.getElementById('videoPlayer').playbackRate=Number(b.dataset.rate);
+  document.querySelectorAll('#speedControls button').forEach(x=>x.classList.toggle('active',x===b));
+});
+
+document.getElementById('historyList').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-act]');if(!b)return;
+  const id=b.dataset.id,act=b.dataset.act;
+  if(act==='play')playVideoById(id);
+  else if(act==='pick')pickVideo(id,false);
+  else if(act==='rec')pickVideo(id,true);
+});
+
+function renderVideoTarget(){
+  const el=document.getElementById('videoTarget');
+  if(!shots.length){el.textContent='矢所を記録すると、動画を紐づけられます';return;}
+  el.textContent='紐づけ先：'+shotLabel(shots[shots.length-1])+'（過去の射は記録履歴から登録）';
+}
+
+function renderHistory(){
+  const list=document.getElementById('historyList');
+  document.getElementById('histTabs').innerHTML='';
+  if(!shots.length){list.innerHTML='<div style="color:var(--muted);">まだ記録がありません</div>';return;}
+  const ns=Math.ceil(shots.length/4);
+  const cur=(histStand==null||histStand>ns)?ns:histStand;
+  document.getElementById('histTabs').innerHTML=Array.from({length:ns},(_,i)=>{const g=shots.slice(i*4,i*4+4);return `<button class='${i+1===cur?'active':''}' onclick='setHistStand(${i+1})'>第${i+1}立 ${g.filter(x=>x.hit).length}/${g.length}</button>`;}).join('');
+  list.innerHTML=shots.slice((cur-1)*4,cur*4).map(s=>{
+    const dx=s.nx>0.3?'前':(s.nx<-0.3?'後':''), dy=s.ny>0.3?'上':(s.ny<-0.3?'下':'');
+    const pos=(dx||dy)?dx+dy:'中心';
+    const has=!!videoUrlMap[s.id];
+    const vtag=has?'🎬 動画あり':(s.videoName?'⚠ 要再登録':'動画なし');
+    const btns=(has?`<button class="pri" data-act="play" data-id="${s.id}">🎬 再生</button>`:'')
+      +`<button data-act="pick" data-id="${s.id}">📎 ${has?'変更':'登録'}</button>`
+      +`<button data-act="rec" data-id="${s.id}">🎥 撮影</button>`;
+    return `<div class="history-row"><div class="history-top"><div><b>第${s.stand}立・${s.arrowNum}本目</b>(${s.arrowType}) <span class="${s.hit?'hit-mark':'miss-mark'}">${s.hit?'◯ 中り':'× 外れ'}</span> <span style="color:var(--muted);">[${pos}]</span></div><span class="vtag">${vtag}</span></div><div class="history-btns">${btns}</div></div>`;
+  }).join('');
+}
+
+function renderAll(){
+  try{
+    const ni=shots.length, na=(ni%4)+1;
+    document.getElementById('nextShotLabel').textContent=`次：第${Math.floor(ni/4)+1}立・${na}本目（${na%2===1?'甲矢':'乙矢'}）`;
+    const hits=shots.filter(s=>s.hit).length;
+    document.getElementById('hitRateLabel').textContent=`的中: ${hits}/${shots.length} (${shots.length?Math.round(hits/shots.length*100):0}%)`;
+    renderSession();draw();updateDiagnosis();renderHistory();renderVideoTarget();renderMatch();renderSessionList();
+  }catch(e){console.warn('renderAll failed',e);}
+}
+try{renderAll();}catch(e){console.warn('initial render failed',e);}
+
+/* ---- セッション管理（日付・練習/試合） ---- */
+function esc(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function dropVideos(arr){arr.forEach(s=>{if(videoUrlMap[s.id]){URL.revokeObjectURL(videoUrlMap[s.id]);delete videoUrlMap[s.id];}dbDel(s.id);});}
+function rate(arr){const h=arr.filter(s=>s.hit).length;return {h,n:arr.length,p:arr.length?Math.round(h/arr.length*100):0};}
+function renderSession(){
+  const s=curSession();
+  document.getElementById('sessDate').value=s.date;
+  document.getElementById('sessTitle').value=s.title||'';
+  document.getElementById('btnPractice').classList.toggle('active',s.type==='practice');
+  document.getElementById('btnMatch').classList.toggle('active',s.type==='match');
+  const b=document.getElementById('modeBadge');
+  b.textContent=s.type==='match'?'🏆 試合モード':'🏹 練習';
+  b.className='mode-badge'+(s.type==='match'?' match':'');
+  document.querySelector('.status-bar').parentElement.classList.toggle('match',s.type==='match');
+}
+function renderMatch(){
+  const el=document.getElementById('matchSummary');
+  if(curSession().type!=='match'||!shots.length){el.innerHTML='';return;}
+  let h='<div class="match-sum"><b>🏆 立ごとの結果</b>';
+  for(let i=0;i<shots.length;i+=4){
+    const g=shots.slice(i,i+4);
+    h+=`<div>第${i/4+1}立　${g.map(s=>s.hit?'◯':'×').join(' ')}　<b>${g.filter(s=>s.hit).length}/${g.length}</b></div>`;
+  }
+  el.innerHTML=h+'</div>';
+}
+function renderSessionList(){
+  const el=document.getElementById('sessList');
+  const list=store.sessions.filter(s=>sessFilter==='all'||s.type===sessFilter).slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  if(!list.length){el.innerHTML='<div style="color:var(--muted);">該当する記録がありません</div>';return;}
+  const wd=['日','月','火','水','木','金','土'];
+  let last='',h='';
+  list.forEach(s=>{
+    if(s.date!==last){
+      last=s.date;
+      const d=new Date(s.date+'T00:00:00');
+      const dr=rate(list.filter(x=>x.date===s.date).flatMap(x=>x.shots));
+      h+=`<div class="day-head"><span>${s.date.replace(/-/g,'/')}（${isNaN(d)?'':wd[d.getDay()]}）</span><span>${dr.h}/${dr.n} (${dr.p}%)</span></div>`;
+    }
+    const sr=rate(s.shots), cur=s.id===store.currentId;
+    h+=`<div class="sess-item${cur?' cur':''}"><div><span class="mode-badge${s.type==='match'?' match':''}">${s.type==='match'?'🏆 試合':'🏹 練習'}</span> ${esc(s.title||'')}<div class="vtag">${sr.n}本　的中 ${sr.h}/${sr.n}${sr.n?` (${sr.p}%)`:''}</div></div><button data-id="${s.id}">${cur?'記録中':'開く'}</button></div>`;
+  });
+  el.innerHTML=h;
+}
+function setSessFilter(f){
+  sessFilter=f;
+  ['all','practice','match'].forEach(k=>document.getElementById('flt_'+k).classList.toggle('active',k===f));
+  renderSessionList();
+}
+function setSessType(t){curSession().type=t;saveShots();renderAll();}
+function pruneEmpty(){const c=curSession();if(!c.shots.length&&!c.title&&store.sessions.length>1)store.sessions=store.sessions.filter(s=>s.id!==c.id);}
+function switchSession(id){
+  if(id===store.currentId)return;
+  pruneEmpty();
+  histStand=null;store.currentId=id;shots=curSession().shots;
+  saveShots();renderAll();window.scrollTo({top:0,behavior:'smooth'});
+}
+function newSession(){
+  const c=curSession();
+  if(!c.shots.length){c.date=todayStr();saveShots();renderAll();return;}
+  const ns=newSess(todayStr(),c.type);
+  store.sessions.push(ns);store.currentId=ns.id;shots=ns.shots;histStand=null;
+  saveShots();renderAll();window.scrollTo({top:0,behavior:'smooth'});
+}
+function deleteSession(){
+  const c=curSession();
+  if(!confirm(`${c.date.replace(/-/g,'/')} の${c.type==='match'?'試合':'練習'}セッション（${c.shots.length}本）を削除しますか？動画も削除されます。`))return;
+  dropVideos(c.shots);
+  store.sessions=store.sessions.filter(s=>s.id!==c.id);
+  if(!store.sessions.length)store.sessions.push(newSess());
+  const last=store.sessions.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id)).pop();
+  store.currentId=last.id;shots=last.shots;histStand=null;
+  saveShots();renderAll();
+}
+document.getElementById('sessDate').addEventListener('change',e=>{curSession().date=e.target.value||todayStr();saveShots();renderSessionList();});
+document.getElementById('sessTitle').addEventListener('input',e=>{curSession().title=e.target.value;saveShots();renderSessionList();});
+document.getElementById('sessList').addEventListener('click',e=>{const b=e.target.closest('button[data-id]');if(b)switchSession(b.dataset.id);});
+
+/* ---- 立ごとの履歴タブ ---- */
+function setHistStand(n){histStand=n;renderHistory();}
+
+/* ---- ページ切替（#rec / #trend / #rank） ---- */
+document.querySelectorAll('.container > .card').forEach(c=>c.classList.add('pg-rec'));
+const st={per:'day',type:'all',view:'trend',sel:null,day:null,sort:'rate',member:'',team:''};
+const PERS=[['year','年'],['month','月'],['week','週'],['day','日']];
+const TYPES=[['all','すべて'],['practice','🏹 練習'],['match','🏆 試合']];
+const SORTS=[['rate','的中率順'],['hits','的中本数順']];
+function tabs(key,items){return items.map(([v,l])=>`<button class='${st[key]===v?'active':''}' data-k='${key}' data-v='${v}'>${l}</button>`).join('');}
+function applyHash(){
+  const h=location.hash.replace('#','');
+  const p=(h==='trend'||h==='rank')?h:'rec';
+  document.body.dataset.pg=p;
+  if(p==='rank')st.member='';
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.pg===p));
+  if(typeof updateTeamBar==='function')updateTeamBar();
+  if(p!=='rec')renderStats();
+  window.scrollTo(0,0);
+}
+function setPage(p){location.hash=p;applyHash();}
+function setStat(k,v){
+  st[k]=v;
+  if(k==='per'||k==='team')st.sel=null;
+  renderStats();
+}
+
+/* ---- 期間ごとの集計（年・月・週・日） ---- */
+function bucketKey(date,per){
+  if(per==='year')return date.slice(0,4);
+  if(per==='month')return date.slice(0,7);
+  if(per==='day')return date;
+  const d=new Date(date+'T00:00:00');d.setDate(d.getDate()-((d.getDay()+6)%7));return dstr(d);
+}
+function bucketLabel(k,per){
+  if(per==='year')return k+'年';
+  if(per==='month')return k.slice(0,4)+'年'+Number(k.slice(5))+'月';
+  const md=k.slice(0,4)+'/'+Number(k.slice(5,7))+'/'+Number(k.slice(8,10));
+  return per==='week'?md+'〜の週':md;
+}
+function shortLabel(k,per){
+  if(per==='year')return k+'年';
+  if(per==='month')return Number(k.slice(5))+'月';
+  return Number(k.slice(5,7))+'/'+Number(k.slice(8,10));
+}
+function buckets(per,type){return bucketsOf(store.sessions,per,type);}
+function bucketsOf(sessions,per,type){
+  const map={};
+  sessions.forEach(s=>{
+    if(type!=='all'&&s.type!==type)return;
+    const k=bucketKey(s.date,per);
+    const b=map[k]||(map[k]={key:k,n:0,h:0,kai:0});
+    s.shots.forEach(x=>{b.n++;if(x.hit)b.h++;});
+    for(let i=0;i+4<=s.shots.length;i+=4){if(s.shots.slice(i,i+4).every(x=>x.hit))b.kai++;}
+  });
+  return Object.values(map).filter(b=>b.n>0).sort((a,b)=>a.key.localeCompare(b.key));
+}
+const pct=b=>Math.round(b.h/b.n*100);
+
+/* ---- メンバー共有（db） ---- */
+let myId=null,dbCap=null,userCap=null,members={},memStatus='',shareStatus='';
+let myTeams=[],teamInfo={},teamMsg='';
+/* ---- チーム（単体HTMLでも使えるローカル登録） ----
+   共有DB（claude db）が使える環境では既存のDB版を使い、
+   使えない環境ではこの端末の localStorage にチームを保存する。
+   招待コードは6文字。部活・コミュニティではコードを伝え合う。 */
+let localTeams=[],localRoster={},myName='';
+try{
+  const lt=JSON.parse(localStorage.getItem('kyudo_local_teams_v1')||'null');
+  if(lt){
+    localTeams=Array.isArray(lt.teams)?lt.teams:[];
+    localRoster=lt.roster||{};
+    myName=lt.myName||'';
+    myTeams=Array.isArray(lt.myTeamIds)?lt.myTeamIds.slice():[];
+    localTeams.forEach(t=>{teamInfo[t.id]={name:t.name,code:t.code,owner:'local'};});
+  }
+}catch(e){}
+function saveLocalTeams(){
+  try{localStorage.setItem('kyudo_local_teams_v1',JSON.stringify({teams:localTeams,roster:localRoster,myName:myName,myTeamIds:myTeams}));}catch(e){}
+}
+function localTeamByCode(code){return localTeams.find(t=>t.code===code);}
+function createLocalTeam(name){
+  let code='';
+  for(let i=0;i<5&&!code;i++){const c=genCode();if(!localTeamByCode(c))code=c;}
+  if(!code)code=genCode();
+  const id='lt'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+  const team={id:id,name:name,code:code};
+  localTeams.push(team);teamInfo[id]={name:name,code:code,owner:'local'};
+  if(!myTeams.includes(id))myTeams.push(id);
+  st.team=id;teamMsg='「'+name+'」を作成しました。招待コード：'+code+'（部員・仲間にこのコードを伝えてください）';
+  saveLocalTeams();renderStats();updateTeamBar();
+}
+function joinLocalTeam(code){
+  const found=localTeamByCode(code);
+  if(found){
+    if(myTeams.includes(found.id)){teamMsg='すでに「'+found.name+'」に参加しています';}
+    else{myTeams.push(found.id);st.team=found.id;teamMsg='「'+found.name+'」に参加しました';}
+  }else{
+    const id='lt'+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+    const team={id:id,name:'チーム（'+code+'）',code:code};
+    localTeams.push(team);teamInfo[id]={name:team.name,code:code,owner:'local'};
+    myTeams.push(id);st.team=id;
+    teamMsg='コード '+code+' のチームに参加登録しました（この端末での登録です。チーム名は下の名簿から確認できます）';
+  }
+  saveLocalTeams();renderStats();updateTeamBar();
+}
+function leaveLocalTeam(id){
+  myTeams=myTeams.filter(x=>x!==id);
+  if(st.team===id)st.team='';
+  saveLocalTeams();renderStats();updateTeamBar();
+}
+function addRosterMember(name){
+  const t=teamNow();if(t==='all'){teamMsg='まずチームを作成するか参加して、表示するチームを選んでください';renderStats();return;}
+  const list=localRoster[t]||(localRoster[t]=[]);
+  list.push({id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),name:name});
+  teamMsg='「'+name+'」を名簿に追加しました';saveLocalTeams();renderStats();
+}
+function updateTeamBar(){
+  const el=document.getElementById('teamBar');if(!el)return;
+  const t=teamNow();
+  if(t==='all'){el.textContent=myTeams.length?'チーム：すべて表示中（'+myTeams.length+'チームに参加）':'チーム未登録 — ランキングでチームを作れます';return;}
+  const ti=teamInfo[t]||{};
+  el.textContent='🏷 '+(ti.name||'チーム')+'　招待コード：'+(ti.code||'—');
+}
+let shareMode='off',explicitOff=false,shareTimer=null,lastShared=null,sharing=false,rtok=0;
+try{shareMode=localStorage.getItem('kyudo_share')||'off';}catch(e){}
+
+function compactSessions(){
+  const r=x=>Math.round(x*100)/100;
+  const ss=store.sessions.filter(x=>x.shots.length&&(shareMode==='all'||x.type==='match'))
+    .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id))
+    .map(x=>({id:x.id,d:x.date,t:x.type,ti:(x.title||'').slice(0,40),s:x.shots.map(h=>[r(h.nx),r(h.ny),h.hit?1:0])}));
+  let trimmed=false;
+  while(ss.length>1&&JSON.stringify(ss).length>230000){ss.shift();trimmed=true;}
+  return {ss,trimmed};
+}
+function scheduleShare(){if(!dbCap||!myId)return;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,1500);}
+async function doShare(){
+  if(sharing){scheduleShare();return;}
+  sharing=true;
+  try{
+    const ref=dbCap.doc('members/'+myId),r=members[myId];
+    const off=shareMode==='off';
+    const {ss,trimmed}=off?{ss:[],trimmed:false}:compactSessions();
+    shareStatus=off?'':(ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません');
+    if(off&&!myTeams.length){
+      if(explicitOff&&r)await ref.delete();
+      explicitOff=false;lastShared=null;
+    }else if(!off&&!ss.length&&!myTeams.length&&!r){
+      /* 書き込む内容なし */
+    }else{
+      const keep=(!off&&!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
+      const key=shareMode+'|'+myTeams.join(',')+'|'+JSON.stringify(keep);
+      if(lastShared===null&&r&&((r.mode||'off')+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
+      if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',updated:Date.now(),sessions:keep});lastShared=key;}
+    }
+  }catch(e){
+    shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
+  }
+  sharing=false;
+  rerender();
+}
+function setShare(m){
+  explicitOff=(m==='off');shareMode=m;
+  try{localStorage.setItem('kyudo_share',m);}catch(e){}
+  lastShared=null;shareStatus='';scheduleShare();renderStats();
+}
+function rerender(){if(document.body.dataset.pg!=='rec')renderStats();}
+
+/* ---- Firebase Firestore ----
+   データ設計（このアプリの既存の形そのまま）：
+   teams/{teamId}   {name, code, owner, created}
+   members/{userId} {v:2, mode, teams:[teamId], name, updated, sessions:[{id,d,t,ti,s:[[nx,ny,hit],...]}]}
+   Firestoreの DocumentReference / CollectionReference は、
+   既存コードが期待する doc()/collection()/onSnapshot()/where().get() と
+   同じ形なので、dbCap に firebase.firestore() をそのまま渡せる。
+   ログインは匿名認証（メール登録なし。端末ごとに1つのuidが保存される）。
+   config は Firebaseコンソールで発行されるものを、この端末の localStorage にだけ保存する。 */
+let firebaseConfig=null,firebaseStatus='',firebaseProject='';
+/* 公開用：ここに firebaseConfig を入れておくと、開いた人全員が
+   貼り付けなしで Firestore に接続できる。入れない場合（null）は、
+   従来どおり各端末の「🔥 Firebaseで共有する」欄から設定する。
+   ※ Firebaseのウェブ用 apiKey は公開用の識別子で、パスワードではない。
+   データの保護は Firestoreのルールと匿名ログインで行う。 */
+const DEFAULT_FIREBASE_CONFIG={apiKey:"AIzaSyCGbqDOr7Ta_Oi6xRMP-85rioaK7RF4rA8",authDomain:"kyudo-app-e13ad.firebaseapp.com",projectId:"kyudo-app-e13ad",storageBucket:"kyudo-app-e13ad.firebasestorage.app",messagingSenderId:"914246347318",appId:"1:914246347318:web:d006f9d3e61128ea750697",measurementId:"G-XTLG1Y1TZC"};
+// 例：const DEFAULT_FIREBASE_CONFIG={apiKey:"...",authDomain:"....firebaseapp.com",projectId:"...",storageBucket:"....appspot.com",messagingSenderId:"...",appId:"1:...:web:..."};
+try{firebaseConfig=JSON.parse(localStorage.getItem('kyudo_firebase_config_v1')||'null');}catch(e){firebaseConfig=null;}
+function loadFirebaseConfig(){
+  const c=firebaseConfig;
+  if(c&&c.apiKey&&c.projectId)return c;
+  const d=DEFAULT_FIREBASE_CONFIG;
+  if(d&&d.apiKey&&d.projectId)return d;
+  return null;
+}
+function saveFirebaseConfigFromInput(){
+  const el=document.getElementById('fbConfigInput');
+  const raw=((el&&el.value)||'').trim();
+  if(!raw){firebaseStatus='設定（firebaseConfig）を貼り付けてください';renderStats();return;}
+  let c=null,err='';
+  try{
+    /* JSONそのままでも、const firebaseConfig = {...}; の形でも読めるように、
+       最初の { から最後の } までを抜き出してから解析する */
+    const s=raw.indexOf('{'),e2=raw.lastIndexOf('}');
+    if(s<0||e2<=s)throw new Error('no object');
+    c=JSON.parse(raw.slice(s,e2+1));
+    if(!c.apiKey||!c.projectId)throw new Error('apiKey / projectId がありません');
+  }catch(e){
+    err=e&&e.message?e.message:String(e);
+    /* 末尾が切れていたり、全体がJSONとして読めなくても、
+       項目ごとに抜き出せれば接続できる（apiKey と projectId が必須） */
+    const pick=k=>{const m=raw.match(new RegExp('["\']?'+k+'["\']?\\s*:\\s*["\']([^"\']+)["\']'));return m?m[1]:'';};
+    const byField={apiKey:pick('apiKey'),authDomain:pick('authDomain'),projectId:pick('projectId'),storageBucket:pick('storageBucket'),messagingSenderId:pick('messagingSenderId'),appId:pick('appId'),measurementId:pick('measurementId')};
+    if(byField.apiKey&&byField.projectId){
+      c={};Object.keys(byField).forEach(k=>{if(byField[k])c[k]=byField[k];});
+    }else{
+      const missing=['apiKey','projectId'].filter(k=>!byField[k]);
+      firebaseStatus='設定を読み取れませんでした。見つからなかった項目：'+missing.join('、')+'。firebaseConfig の apiKey と projectId の行が貼れているか確認してください。';
+      renderStats();return;
+    }
+  }
+  try{
+    localStorage.setItem('kyudo_firebase_config_v1',JSON.stringify(c));
+    location.reload();
+  }catch(e){firebaseStatus='設定を読み取れませんでした（'+err+'）。apiKey / projectId を含む firebaseConfig の全体が貼れているか確認してください';renderStats();}
+}
+function clearFirebaseConfig(){
+  try{localStorage.removeItem('kyudo_firebase_config_v1');}catch(e){}
+  location.reload();
+}
+function startMembersSync(){
+  let first=true;
+  const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
+  dbCap.collection('members').onSnapshot(snap=>{
+    clearTimeout(timer);memStatus='';members={};
+    snap.docs.forEach(d=>{members[d.id]=d.data();});
+    if(first){
+      first=false;
+      if(shareMode==='off'&&members[myId]&&members[myId].mode)shareMode=members[myId].mode;
+      if(members[myId]&&Array.isArray(members[myId].teams)){
+        /* Firestore側の参加チームと、この端末のローカルチームを両方残す */
+        myTeams=Array.from(new Set([].concat(myTeams,members[myId].teams)));
+        saveLocalTeams();
+      }
+      scheduleShare();
+    }
+    rerender();
+  },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
+}
+async function initFirebase(){
+  try{
+    if(typeof firebase==='undefined')return false;
+    const cfg=loadFirebaseConfig();
+    if(!cfg)return false;
+    if(!firebase.apps.length)firebase.initializeApp(cfg);
+    firebaseProject=cfg.projectId||'';
+    const auth=firebase.auth();
+    if(!auth.currentUser)await auth.signInAnonymously();
+    const user=auth.currentUser;
+    if(!user)return false;
+    dbCap=firebase.firestore();
+    userCap={
+      id:async()=>auth.currentUser.uid,
+      profiles:async(ids)=>{
+        const out={};
+        for(const id of ids){
+          try{
+            const d=await dbCap.doc('members/'+id).get();
+            if(d.exists&&d.data()&&d.data().name)out[id]={name:d.data().name};
+          }catch(e){}
+        }
+        return out;
+      }
+    };
+    myId=user.uid;
+    firebaseStatus='Firebase Firestore（'+firebaseProject+'）に接続中';
+    startMembersSync();
+    return true;
+  }catch(e){
+    firebaseStatus='Firebaseに接続できませんでした：'+((e&&e.message)||e)+'（Authenticationで「匿名」を有効にしたか、configを確認してください）';
+    return false;
+  }
+}
+
+(async()=>{
+  try{
+    if(await initFirebase())return;
+    if(typeof claude==='undefined'||!claude.use)return;
+    const [db,user]=await Promise.all([claude.use('db'),claude.use('user')]);
+    if(!db||!user)return;
+    const id=await user.id();
+    if(!id)return;
+    dbCap=db;userCap=user;myId=id;
+    let first=true;
+    const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
+    db.collection('members').onSnapshot(snap=>{
+      clearTimeout(timer);memStatus='';members={};
+      snap.docs.forEach(d=>{members[d.id]=d.data();});
+      if(first){
+        first=false;
+        if(shareMode==='off'&&members[myId]&&members[myId].mode)shareMode=members[myId].mode;
+        if(members[myId]&&Array.isArray(members[myId].teams))myTeams=members[myId].teams.slice();
+        scheduleShare();
+      }
+      rerender();
+    },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
+  }catch(e){}
+})();
+
+function allSessionsOf(uid){
+  if(uid===myId||uid==='me')return store.sessions;
+  const m=members[uid];
+  if(!m||!Array.isArray(m.sessions))return [];
+  return m.sessions.map(x=>({id:x.id,date:x.d,type:x.t,title:x.ti||'',shots:(x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]}))}));
+}
+function teamNow(){return (st.team&&(st.team==='all'||myTeams.includes(st.team)))?st.team:(myTeams[0]||'all');}
+function participants(){
+  const t=teamNow(),ids=[myId||'me'];
+  Object.keys(members).forEach(id=>{
+    if(id===myId)return;
+    const m=members[id];
+    if(!m||!Array.isArray(m.sessions))return;
+    if(t!=='all'&&!(Array.isArray(m.teams)&&m.teams.includes(t)))return;
+    ids.push(id);
+  });
+  return ids;
+}
+/* ---- チーム ---- */
+async function loadTeams(){
+  if(!dbCap)return;
+  for(const id of myTeams){
+    if(!teamInfo[id]){try{const d=await dbCap.doc('teams/'+id).get();if(d.exists)teamInfo[id]=d.data();}catch(e){}}
+  }
+}
+function genCode(){
+  const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',a=new Uint32Array(6);
+  (window.crypto||{getRandomValues:x=>x.forEach((_,i)=>{x[i]=Math.floor(Math.random()*4294967296);})}).getRandomValues(a);
+  return Array.from(a,v=>c[v%c.length]).join('');
+}
+async function createTeam(){
+  const el=document.getElementById('teamName'),name=((el&&el.value)||'').trim().slice(0,30);
+  if(!name){teamMsg='チーム名を入力してください';renderStats();return;}
+  if(!dbCap){createLocalTeam(name);return;}
+  try{
+    let code='';
+    for(let i=0;i<5&&!code;i++){
+      const c=genCode(),q=await dbCap.collection('teams').where('code','==',c).get();
+      if(q.empty)code=c;
+    }
+    if(!code)throw new Error('code');
+    const ref=dbCap.collection('teams').doc();
+    await ref.set({name,code,owner:myId,created:Date.now()});
+    teamInfo[ref.id]={name,code,owner:myId};
+    myTeams.push(ref.id);st.team=ref.id;
+    teamMsg='「'+name+'」を作成しました。招待コード：'+code;
+    scheduleShare();
+  }catch(e){teamMsg='チームを作成できませんでした（このページの編集権限をご確認ください）';}
+  renderStats();
+}
+async function joinTeam(){
+  const el=document.getElementById('teamCode'),code=((el&&el.value)||'').trim().toUpperCase();
+  if(!code){teamMsg='招待コードを入力してください';renderStats();return;}
+  if(!dbCap){joinLocalTeam(code);return;}
+  try{
+    const q=await dbCap.collection('teams').where('code','==',code).get();
+    if(q.empty)teamMsg='そのコードのチームが見つかりません';
+    else{
+      const d=q.docs[0];
+      if(myTeams.includes(d.id))teamMsg='すでに参加しています';
+      else{myTeams.push(d.id);teamInfo[d.id]=d.data();st.team=d.id;teamMsg='「'+(d.data().name||'チーム')+'」に参加しました';scheduleShare();}
+    }
+  }catch(e){teamMsg='参加できませんでした。時間をおいて再度お試しください';}
+  renderStats();
+}
+function leaveTeam(id){
+  if(!confirm('このチームから退出しますか？'))return;
+  if(!dbCap){leaveLocalTeam(id);return;}
+  myTeams=myTeams.filter(x=>x!==id);
+  if(st.team===id)st.team='';
+  if(shareMode==='off'&&!myTeams.length)explicitOff=true;
+  teamMsg='';scheduleShare();renderStats();
+}
+function teamCard(){
+  if(!dbCap){
+    const t=teamNow();
+    const list=myTeams.map(id=>{
+      const ti=teamInfo[id]||{};
+      const cnt=(localRoster[id]||[]).length;
+      return `<div class='sess-item${t===id?' cur':''}'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>名簿 ${cnt}人　招待コード：<b>${esc(ti.code||'')}</b></div></div><div class='btn-group'><button data-team-show='${id}'>表示</button><button class='danger' data-leave='${id}'>退出</button></div></div>`;
+    }).join('');
+    const roster=(t!=='all'?(localRoster[t]||[]):[]).map(m=>`<div class='sess-item'><div><b>${esc(m.name)}</b><div class='vtag'>記録なし（まだ共有されていません）</div></div><button class='danger' data-remove-member='${m.id}'>削除</button></div>`).join('');
+    return `<div class='card'><h2>🏷 チーム</h2>
+    <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
+    ${list||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。作成するか、招待コードで参加してください。</p>"}
+    <div class='sess-row' style='margin-top:8px'><input type='text' id='teamName' placeholder='チーム名（例：○○高校弓道部）' maxlength='30' style='flex:1;min-width:0'/><button class='pri' data-team-act='create'>作成</button></div>
+    <div class='sess-row'><input type='text' id='teamCode' placeholder='招待コード（6文字）' maxlength='8' style='flex:1;min-width:0;text-transform:uppercase'/><button class='pri' data-team-act='join'>参加</button></div>
+    ${teamMsg?`<p class='hint-text'><b>${esc(teamMsg)}</b></p>`:''}
+    <h2 style='margin:12px 0 4px'>👥 チーム名簿</h2>
+    ${t==='all'?`<p class='hint-text' style='text-align:left'>名簿を見るには、上のチームで「表示」を選んでください。</p>`:roster||`<p class='hint-text' style='text-align:left'>まだ名簿がありません。下から部員・仲間の名前を追加できます。</p>`}
+    ${t!=='all'?`<div class='sess-row'><input type='text' id='memberName' placeholder='部員・仲間の名前' maxlength='20' style='flex:1;min-width:0'/><button class='pri' data-team-act='addMember'>名簿に追加</button></div>`:''}
+    <p class='hint-text' style='text-align:left'>チームはランキングで比較するグループです。招待コードを部員・仲間に伝えると、同じチームで比較できます。この端末に保存される登録です。記録そのものの共有は、下の「メンバーと共有」（共有環境）または同じ端末での名簿管理で行います。</p></div>`;
+  }
+  const list=myTeams.map(id=>{
+    const ti=teamInfo[id]||{},cnt=Object.values(members).filter(m=>m&&Array.isArray(m.teams)&&m.teams.includes(id)).length;
+    return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>メンバー ${cnt}人　招待コード：<b>${esc(ti.code||'')}</b></div></div><button class='danger' data-leave='${id}'>退出</button></div>`;
+  }).join('');
+  return `<div class='card'><h2>🏷 チーム</h2>${list||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。作成するか、招待コードで参加してください。</p>"}
+  <div class='sess-row' style='margin-top:8px'><input type='text' id='teamName' placeholder='チーム名（例：○○高校弓道部）' maxlength='30' style='flex:1;min-width:0'/><button class='pri' data-team-act='create'>作成</button></div>
+  <div class='sess-row'><input type='text' id='teamCode' placeholder='招待コード（6文字）' maxlength='8' style='flex:1;min-width:0;text-transform:uppercase'/><button class='pri' data-team-act='join'>参加</button></div>
+  ${teamMsg?`<p class='hint-text'><b>${esc(teamMsg)}</b></p>`:''}
+  <p class='hint-text' style='text-align:left'>チームはランキングで比較するグループです。招待コードを部員・仲間に伝えると、同じチームで比較できます。アクセス制限ではないので、このページを開けるメンバーは、共有された記録を見られます。</p></div>`;
+}
+async function names(ids){
+  let ps={};
+  try{if(userCap)ps=await userCap.profiles(ids.filter(i=>i!=='me'));}catch(e){}
+  const out={};let n=0;
+  ids.forEach(id=>{
+    if(id===myId||id==='me'){out[id]=myName||'あなた';return;}
+    out[id]=(ps[id]&&ps[id].name)||('メンバー'+(++n));
+  });
+  return out;
+}
+function periodKeys(per,type,ids){
+  const set=new Set();
+  ids.forEach(id=>bucketsOf(allSessionsOf(id),per,type).forEach(b=>set.add(b.key)));
+  return [...set].sort().reverse();
+}
+
+/* ---- グラフ ---- */
+function chartSvg(series,per){
+  const keys=[...new Set(series.flatMap(x=>x.b.map(b=>b.key)))].sort().slice(-12);
+  const W=320,H=150,L=28,R=10,T=16,B=26,pw=W-L-R,ph=H-T-B;
+  const xs=i=>keys.length===1?L+pw/2:L+pw*i/(keys.length-1),ys=p=>T+ph*(1-p/100);
+  let svg=`<svg viewBox='0 0 ${W} ${H}' width='100%' role='img' aria-label='的中率の推移'>`;
+  [0,50,100].forEach(p=>{svg+=`<line class='gl' x1='${L}' x2='${W-R}' y1='${ys(p)}' y2='${ys(p)}'/><text class='tx' x='${L-4}' y='${ys(p)+3}' text-anchor='end'>${p}</text>`;});
+  series.forEach(x=>{
+    const pts=keys.map((k,i)=>{const b=x.b.find(y=>y.key===k);return b?[xs(i),ys(pct(b)),pct(b)]:null;}).filter(Boolean);
+    svg+=`<polyline class='ln${x.cls}' points='${pts.map(q=>q[0]+','+q[1]).join(' ')}'/>`;
+    pts.forEach(q=>{svg+=`<circle class='dt${x.cls}' cx='${q[0]}' cy='${q[1]}' r='3.5'/>`;if(series.length===1)svg+=`<text class='tx' x='${q[0]}' y='${q[1]-7}' text-anchor='middle'>${q[2]}</text>`;});
+  });
+  keys.forEach((k,i)=>{if(keys.length<=8||i%2===0)svg+=`<text class='tx' x='${xs(i)}' y='${H-8}' text-anchor='middle'>${shortLabel(k,per)}</text>`;});
+  return svg+'</svg>';
+}
+function dayBody(all){
+  const days=all.map(b=>b.key).reverse();
+  const day=days.includes(st.day)?st.day:days[0];
+  const ss=store.sessions.filter(x=>x.date===day&&(st.type==='all'||x.type===st.type)).sort((a,b)=>a.id.localeCompare(b.id));
+  const stands=[];
+  ss.forEach(x=>{for(let i=0;i<x.shots.length;i+=4){const g=x.shots.slice(i,i+4);stands.push({h:g.filter(y=>y.hit).length,n:g.length});}});
+  const W=320,H=160,L=28,R=10,T=18,B=28,pw=W-L-R,ph=H-T-B,m=Math.max(stands.length,1),cw=pw/m;
+  const ys=p=>T+ph*(1-p/100);
+  let svg=`<svg viewBox='0 0 ${W} ${H}' width='100%' role='img' aria-label='一日の的中推移'>`;
+  [0,50,100].forEach(p=>{svg+=`<line class='gl' x1='${L}' x2='${W-R}' y1='${ys(p)}' y2='${ys(p)}'/><text class='tx' x='${L-4}' y='${ys(p)+3}' text-anchor='end'>${p}</text>`;});
+  let ch=0,cn=0;const pts=[];
+  stands.forEach((x,i)=>{
+    ch+=x.h;cn+=x.n;
+    const cx=L+cw*i+cw/2,bw=Math.min(cw*0.6,32),bh=ph*(x.h/x.n),cp=Math.round(ch/cn*100);
+    svg+=`<rect class='bar' x='${cx-bw/2}' y='${T+ph-bh}' width='${bw}' height='${bh}' rx='2'/><text class='tx' x='${cx}' y='${T+ph-bh-3}' text-anchor='middle'>${x.h}/${x.n}</text>`;
+    if(m<=10||i%2===0)svg+=`<text class='tx' x='${cx}' y='${H-10}' text-anchor='middle'>${i+1}立</text>`;
+    pts.push([cx,ys(cp),cp]);
+  });
+  svg+=`<polyline class='ln2' points='${pts.map(q=>q[0]+','+q[1]).join(' ')}'/>`;
+  pts.forEach(q=>{svg+=`<circle class='dt2' cx='${q[0]}' cy='${q[1]}' r='3'/>`;});
+  svg+='</svg>';
+  const tn=stands.reduce((a,x)=>a+x.n,0),th=stands.reduce((a,x)=>a+x.h,0),kai=stands.filter(x=>x.n===4&&x.h===4).length;
+  return `<h2 style='margin:4px 0 6px'>🕐 ${bucketLabel(day,'day')} の一日の推移</h2>
+  <div class='sess-row'><span style='font-size:.82rem'>日付：</span><select data-k='day'>${days.map(k=>`<option value='${k}' ${k===day?'selected':''}>${bucketLabel(k,'day')}</option>`).join('')}</select></div>
+  <div class='diag-summary'>${stands.length}立 ${th}/${tn}本（${tn?Math.round(th/tn*100):0}%）／皆中 ${kai}回</div>${svg}
+  <div class='legend'><span style='color:var(--chkb)'>■</span> 立ごとの的中　<span style='color:#d98e04'>●</span> 累積的中率（%）</div><h2 style='margin:12px 0 6px'>📅 日ごとの推移</h2>`;
+}
+function trendBody(){
+  const per=st.per,all=buckets(per,st.type);
+  if(!all.length)return `<p class='hint-text'>該当する記録がありません</p>`;
+  const tot=all.reduce((a,b)=>({n:a.n+b.n,h:a.h+b.h,kai:a.kai+b.kai}),{n:0,h:0,kai:0});
+  const rows=all.slice().reverse().map(b=>`<tr><td>${bucketLabel(b.key,per)}</td><td>${b.h}/${b.n}</td><td>${pct(b)}%</td><td>${b.kai}</td></tr>`).join('');
+  return (per==='day'?dayBody(all):'')+`<div class='diag-summary'>合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg([{b:all,cls:''}],per)}<p class='hint-text'>的中率（%）・直近${Math.min(12,all.length)}期間</p><div class='history-list'><table class='tbl'><tr><th>期間</th><th>的中</th><th>的中率</th><th>皆中</th></tr>${rows}</table></div>`;
+}
+
+/* ---- ランキング（メンバー比較） ---- */
+async function rankBody(){
+  await loadTeams();
+  const per=st.per,t=teamNow(),ids=participants(),keys=periodKeys(per,st.type,ids);
+  const tname=t==='all'?'全体':((teamInfo[t]&&teamInfo[t].name)||'チーム');
+  const teamSel=myTeams.length?`<div class='sess-row'><span style='font-size:.82rem'>チーム：</span><select data-k='team'><option value='all' ${t==='all'?'selected':''}>すべて（共有中の全員）</option>${myTeams.map(id=>`<option value='${id}' ${id===t?'selected':''}>${esc((teamInfo[id]&&teamInfo[id].name)||'チーム')}</option>`).join('')}</select></div>`:'';
+  const sortTabs=`<div class='btn-group tabs' style='margin-bottom:8px'>${tabs('sort',SORTS)}</div>`;
+  const rosterIds=t==='all'?myTeams:([t]);
+  const rosterList=rosterIds.flatMap(tid=>(localRoster[tid]||[]).map(m=>({tid:tid,m:m})));
+  const rosterRows=rosterList.map(x=>`<div class='rank-row'><div class='rank-no'>—</div><div class='rank-main'>${esc(x.m.name)}<div class='vtag'>${esc((teamInfo[x.tid]&&teamInfo[x.tid].name)||'チーム')}　記録なし</div></div><div class='rank-val'>—<div class='vtag'>名簿のみ</div></div></div>`).join('');
+  const rosterBlock=rosterRows?`<h2 style='margin:14px 0 4px'>👥 チーム名簿（記録なし）</h2>`+rosterRows:'';
+  if(!keys.length)return teamSel+sortTabs+`<p class='hint-text'>該当する記録がありません。下の「🏷 チーム」でチームを作り、名簿に部員を追加できます。</p>`+rosterBlock;
+  const sel=keys.includes(st.sel)?st.sel:keys[0];
+  const nm=await names(ids);
+  const rows=ids.map(id=>({id,b:bucketsOf(allSessionsOf(id),per,st.type).find(x=>x.key===sel)})).filter(r=>r.b);
+  const rk=r=>r.b.h/r.b.n;
+  rows.sort((a,b)=>st.sort==='rate'?((b.b.n>=4)-(a.b.n>=4))||rk(b)-rk(a)||b.b.h-a.b.h:b.b.h-a.b.h||rk(b)-rk(a));
+  const medals=['🥇','🥈','🥉'];
+  const tot=rows.reduce((a,r)=>({n:a.n+r.b.n,h:a.h+r.b.h,kai:a.kai+r.b.kai}),{n:0,h:0,kai:0});
+  const list=rows.map((r,i)=>`<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`).join('');
+  const note=ids.length<2?`<p class='hint-text'>${t==='all'?'共有しているメンバーがまだいません。':'このチームで記録を共有しているメンバーがまだいません。'}下の「メンバーと共有」をオンにして、仲間にも共有してもらいましょう。</p>`:`<p class='hint-text'>${ids.length}人で比較中（タップでその人の記録を表示）</p>`;
+  const bestRows=bucketsOf(store.sessions,per,st.type).filter(b=>b.n>=4).sort((a,b)=>b.h/b.n-a.h/a.n||b.h-a.h).slice(0,5)
+    .map((b,i)=>`<div class='rank-row'><div class='rank-no'>${i+1}位</div><div class='rank-main'>${bucketLabel(b.key,per)}</div><div class='rank-val'>${pct(b)}%<div class='vtag'>${b.h}/${b.n}</div></div></div>`).join('');
+  return teamSel+sortTabs+`<div class='sess-row'><span style='font-size:.82rem'>対象期間：</span><select data-k='sel'>${keys.map(k=>`<option value='${k}' ${k===sel?'selected':''}>${bucketLabel(k,per)}</option>`).join('')}</select></div>`
+    +`<div class='diag-summary'>${esc(tname)}　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回／${rows.length}人</div>`+list+rosterBlock+note+(bestRows?`<h2 style='margin:14px 0 4px'>🥇 自分のベスト期間</h2>`+bestRows:'');
+}
+async function memberBody(uid){
+  const per=st.per,isMe=(uid===myId||uid==='me');
+  const nm=await names([uid,myId||'me']);
+  const theirS=allSessionsOf(uid),theirs=bucketsOf(theirS,per,st.type),mine=bucketsOf(store.sessions,per,st.type);
+  const name=esc(nm[uid]||'メンバー');
+  const sess=theirS.filter(x=>st.type==='all'||x.type===st.type).sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  const tot=theirs.reduce((a,b)=>({n:a.n+b.n,h:a.h+b.h,kai:a.kai+b.kai}),{n:0,h:0,kai:0});
+  const series=isMe?[{b:theirs,cls:''}]:[{b:mine,cls:'2'},{b:theirs,cls:''}];
+  const rows=sess.map(x=>{
+    const sr=rate(x.shots),stands=[];
+    for(let i=0;i<x.shots.length;i+=4){const g=x.shots.slice(i,i+4);stands.push(`<div>第${i/4+1}立　${g.map(y=>y.hit?'◯':'×').join(' ')}　<b>${g.filter(y=>y.hit).length}/${g.length}</b></div>`);}
+    return `<div class='history-row'><div class='history-top'><div><b>${x.date.replace(/-/g,'/')}</b> <span class='mode-badge${x.type==='match'?' match':''}'>${x.type==='match'?'🏆 試合':'🏹 練習'}</span> ${esc(x.title||'')}</div><span class='vtag'>${sr.h}/${sr.n}（${sr.p}%）</span></div><div style='font-size:.82rem;margin-top:4px'>${stands.join('')}</div></div>`;
+  }).join('');
+  const legend=isMe?'':`<div class='legend'><span style='color:#d98e04'>●</span> あなた　<span style='color:var(--head)'>●</span> ${name}</div>`;
+  return `<button data-k='member' data-v=''>‹ ランキングに戻る</button><h2 style='margin:10px 0 6px'>${name} の記録</h2>`
+    +(tot.n?`<div class='diag-summary'>${per==='year'?'年':per==='month'?'月':per==='week'?'週':'日'}別の推移　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg(series,per)}${legend}`:'')
+    +`<div class='history-list'>${rows||'<div style="color:var(--muted);">該当する記録がありません</div>'}</div>`;
+}
+function shareCard(){
+  if(!dbCap)return `<div class='card'><h2>🔥 Firebaseで共有する</h2>
+  <p class='hint-text' style='text-align:left'>まだFirestoreに接続していません。Firebaseコンソールでプロジェクトを作り、ウェブアプリの <b>firebaseConfig</b> を下に貼ると、この端末から共有が始まります。設定はこの端末のブラウザにだけ保存されます。</p>
+  <textarea id='fbConfigInput' rows='6' style='width:100%;font:inherit;font-size:.8rem;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--btn);color:var(--text)' placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'></textarea>
+  <div class='sess-row' style='margin-top:8px'><button class='pri' data-fb-act='save'>Firebaseに接続する</button></div>
+  ${firebaseStatus?`<p class='hint-text'><b>${esc(firebaseStatus)}</b></p>`:''}
+  <p class='hint-text' style='text-align:left'>手順：① console.firebase.google.com でプロジェクト作成（場所：asia-northeast1）②「Firestore Database」を作成 ③「Authentication → ログイン方法」で匿名を有効化 ④「プロジェクトの設定 → マイアプリ → ウェブアプリ」で config をコピー ⑤ Firestoreの「ルール」に firestore.rules を貼って公開する。</p></div>`;
+  const btns=[['off','共有しない'],['match','🏆 試合のみ'],['all','すべて共有']].map(([v,l])=>`<button class='${shareMode===v?'active':''}' data-share='${v}'>${l}</button>`).join('');
+  return `<div class='card'><h2>👥 メンバーと共有</h2><div class='btn-group tabs'>${btns}</div><p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}共有をオンにすると、このページを開けるメンバー全員が、あなたの記録（日付・練習/試合・メモ・矢所）を見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p><div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
+}
+function renderStats(){
+  const pg=document.body.dataset.pg;
+  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();
+}
+function renderTrendPage(){
+  document.getElementById('trendPage').innerHTML=`<div class='card'><h2>📈 的中推移</h2><div class='btn-group tabs'>${tabs('per',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('type',TYPES)}</div>${trendBody()}</div>`;
+}
+async function renderRankPage(){
+  const tok=++rtok,el=document.getElementById('rankPage');
+  const head=`<div class='card'><h2>🏅 的中ランキング</h2><div class='btn-group tabs'>${tabs('per',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('type',TYPES)}</div>`;
+  let body='';
+  try{body=st.member?await memberBody(st.member):await rankBody();}
+  catch(e){body="<p class='hint-text'>表示中にエラーが発生しました</p>";}
+  if(tok!==rtok)return;
+  const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
+  const act=document.activeElement&&document.activeElement.id;
+  const keep={teamName:val('teamName'),teamCode:val('teamCode'),memberName:val('memberName'),fbConfigInput:val('fbConfigInput')};
+  el.innerHTML=head+body+'</div>'+teamCard()+shareCard();
+  ['teamName','teamCode','memberName','fbConfigInput'].forEach(id=>{const x=document.getElementById(id);if(x&&keep[id])x.value=keep[id];});
+  if(act==='teamName'||act==='teamCode'||act==='memberName'){const x=document.getElementById(act);if(x)x.focus();}
+}
+
+document.getElementById('nav').addEventListener('click',e=>{const b=e.target.closest('button[data-pg]');if(b)setPage(b.dataset.pg);});
+['trendPage','rankPage'].forEach(id=>{
+  const tp=document.getElementById(id);
+  tp.addEventListener('click',e=>{
+    const b=e.target.closest('button[data-k]');if(b){setStat(b.dataset.k,b.dataset.v);return;}
+    const fb=e.target.closest('button[data-fb-act]');if(fb){if(fb.dataset.fbAct==='save')saveFirebaseConfigFromInput();else if(fb.dataset.fbAct==='clear'){if(confirm('Firebaseの設定をこの端末から外しますか？'))clearFirebaseConfig();}return;}
+    const sb=e.target.closest('button[data-share]');if(sb){setShare(sb.dataset.share);return;}
+    const lv=e.target.closest('button[data-leave]');if(lv){leaveTeam(lv.dataset.leave);return;}
+    const sh=e.target.closest('button[data-team-show]');if(sh){st.team=sh.dataset.teamShow;updateTeamBar();renderStats();return;}
+    const rm=e.target.closest('button[data-remove-member]');if(rm){const t=teamNow();if(t!=='all'){localRoster[t]=(localRoster[t]||[]).filter(m=>m.id!==rm.dataset.removeMember);saveLocalTeams();renderStats();}return;}
+    const ta=e.target.closest('button[data-team-act]');if(ta){
+      if(ta.dataset.teamAct==='create')createTeam();
+      else if(ta.dataset.teamAct==='join')joinTeam();
+      else if(ta.dataset.teamAct==='saveName'){const x=document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);saveLocalTeams();teamMsg=myName?'表示名を「'+myName+'」にしました':'';renderStats();}
+      else if(ta.dataset.teamAct==='addMember'){const x=document.getElementById('memberName');const n=((x&&x.value)||'').trim().slice(0,20);if(!n){teamMsg='追加する名前を入力してください';renderStats();return;}addRosterMember(n);}
+      return;}
+    const r=e.target.closest('[data-uid]');if(r){st.member=r.dataset.uid;renderStats();window.scrollTo(0,0);}
+  });
+  tp.addEventListener('change',e=>{const sel=e.target.closest('select[data-k]');if(sel)setStat(sel.dataset.k,sel.value);});
+});
+window.addEventListener('hashchange',applyHash);
+applyHash();
+
+// 保存済み動画の復元
+(async()=>{
+  await dbOpen();
+  if(!_db)return;
+  try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
+  const keys=await dbTx('readonly',s=>s.getAllKeys());
+  const ids=new Set(store.sessions.flatMap(x=>x.shots.map(s=>s.id)));
+  for(const k of keys){
+    if(!ids.has(k)){dbDel(k);continue;}
+    const b=await dbTx('readonly',s=>s.get(k));
+    if(b)videoUrlMap[k]=URL.createObjectURL(b);
+  }
+  renderHistory();
+})().catch(()=>{});
+</script>
+</body>
+</html>
