@@ -75,9 +75,19 @@ input[type=date],input[type=text]{font:inherit;font-size:.9rem;padding:7px 8px;b
 .auth-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin:-2px 2px 10px}
 .auth-bar button{padding:4px 10px;font-size:.8rem}
 .login-gate{position:fixed;inset:0;z-index:50;display:none;align-items:flex-start;justify-content:center;padding:18vh 16px 16px;background:rgba(244,241,234,.97);overflow:auto}
-.pg-trend,.pg-rank{display:none}
-body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank{display:block}
-body[data-pg=trend] .pg-rec,body[data-pg=rank] .pg-rec{display:none}
+.pg-trend,.pg-rank,.pg-profile{display:none}
+body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank,body[data-pg=profile] .pg-profile{display:block}
+body[data-pg=trend] .pg-rec,body[data-pg=rank] .pg-rec,body[data-pg=profile] .pg-rec{display:none}
+.menu-btn{flex:0 0 auto;font-size:1.25rem;line-height:1;padding:8px 12px;border-radius:8px}
+.menu-drawer{position:fixed;top:12px;right:12px;z-index:70;display:none;width:230px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:8px}
+.menu-drawer button{display:block;width:100%;text-align:left;padding:10px 12px;font-size:.95rem;border:none;background:none;color:var(--text)}
+.menu-drawer button:hover{background:var(--soft)}
+.menu-drawer .menu-head{display:flex;justify-content:space-between;align-items:center;padding:4px 8px 8px;font-weight:bold}
+.profile-field{margin:10px 0}
+.profile-field label{display:block;font-size:.82rem;color:var(--muted);margin-bottom:4px}
+.profile-field input,.profile-field select,.profile-field textarea{width:100%;font:inherit;font-size:.95rem;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--btn);color:var(--text)}
+.ob-choice{display:block;width:100%;text-align:left;padding:12px;margin:8px 0;border:1px solid var(--border);border-radius:10px;background:var(--btn);color:var(--text);font-size:.95rem}
+.ob-choice.sel{border-color:var(--primary);background:var(--soft);font-weight:bold}
 .tabs{flex-wrap:wrap}
 .stand-tabs{overflow-x:auto;margin-bottom:6px;padding-bottom:2px}
 .stand-tabs button{flex:none}
@@ -109,9 +119,17 @@ input[type=file]{display:none}
 <body>
 <div class="container">
   <header>
-    <h1>🏹 的中＆射癖分析アプリ</h1>
+    <div style='display:flex;align-items:center;justify-content:space-between;gap:8px'><h1 style='margin:0'>🏹 的中＆射癖分析アプリ</h1><button id='menuBtn' class='menu-btn' aria-label='メニュー'>☰</button></div>
     <p>的（または周囲の安土）をタップして矢所を記録</p>
   </header>
+  <div id='menuDrawer' class='menu-drawer' style='display:none'>
+    <div class='menu-head'><span>メニュー</span><button id='menuClose' style='width:auto;padding:4px 8px'>✕</button></div>
+    <button data-menu='rec'>📝 記録</button>
+    <button data-menu='trend'>📈 推移</button>
+    <button data-menu='rank'>🏅 ランキング</button>
+    <button data-menu='profile'>👤 プロフィール</button>
+    <button data-menu='logout'>🚪 ログアウト</button>
+  </div>
 
   <nav class='nav' id='nav'>
     <button data-pg='rec' class='active'>📝 記録</button>
@@ -123,6 +141,8 @@ input[type=file]{display:none}
   <div class='login-gate' id='loginGate' style='display:none'></div>
   <div class='pg-trend' id='trendPage'></div>
   <div class='pg-rank' id='rankPage'></div>
+  <div class='pg-profile' id='profilePage'></div>
+  <div class='login-gate' id='onboardOverlay' style='display:none;z-index:60'></div>
 
   <div class="card">
     <div class="diag-header"><h2>📅 記録セッション</h2><span class="mode-badge" id="modeBadge"></span></div>
@@ -609,10 +629,11 @@ const SORTS=[['rate','的中率順'],['hits','的中本数順']];
 function tabs(key,items){return items.map(([v,l])=>`<button class='${st[key]===v?'active':''}' data-k='${key}' data-v='${v}'>${l}</button>`).join('');}
 function applyHash(){
   const h=location.hash.replace('#','');
-  const p=(h==='trend'||h==='rank')?h:'rec';
+  const p=(h==='trend'||h==='rank'||h==='profile')?h:'rec';
   document.body.dataset.pg=p;
   if(p==='rank')st.member='';
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.pg===p));
+  closeMenu();
   if(typeof updateTeamBar==='function')updateTeamBar();
   if(p!=='rec')renderStats();
   window.scrollTo(0,0);
@@ -657,26 +678,30 @@ function bucketsOf(sessions,per,type){
 const pct=b=>Math.round(b.h/b.n*100);
 
 /* ---- メンバー共有（db） ---- */
-let myId=null,dbCap=null,userCap=null,members={},memStatus='',shareStatus='';
+let myId=null,dbCap=null,userCap=null,members={},memStatus='',shareStatus='',membersFirst=false;
 let myTeams=[],teamInfo={},teamMsg='';
 /* ---- チーム（単体HTMLでも使えるローカル登録） ----
    共有DB（claude db）が使える環境では既存のDB版を使い、
    使えない環境ではこの端末の localStorage にチームを保存する。
    招待コードは6文字。部活・コミュニティではコードを伝え合う。 */
-let localTeams=[],localRoster={},myName='';
+let localTeams=[],localRoster={},myName='',profile={};
 try{
   const lt=JSON.parse(localStorage.getItem('kyudo_local_teams_v1')||'null');
   if(lt){
     localTeams=Array.isArray(lt.teams)?lt.teams:[];
     localRoster=lt.roster||{};
     myName=lt.myName||'';
+    profile=lt.profile||{};
     myTeams=Array.isArray(lt.myTeamIds)?lt.myTeamIds.slice():[];
     localTeams.forEach(t=>{teamInfo[t.id]={name:t.name,code:t.code,owner:'local'};});
   }
 }catch(e){}
 function saveLocalTeams(){
-  try{localStorage.setItem('kyudo_local_teams_v1',JSON.stringify({teams:localTeams,roster:localRoster,myName:myName,myTeamIds:myTeams}));}catch(e){}
+  try{localStorage.setItem('kyudo_local_teams_v1',JSON.stringify({teams:localTeams,roster:localRoster,myName:myName,profile:profile,myTeamIds:myTeams}));}catch(e){}
 }
+/* 段位・級位の選択肢（プロフィール・初回設定で共通） */
+const GRADES=['','5級','4級','3級','2級','1級','初段','弐段','参段','四段','五段','六段','七段','八段'];
+function gradeOptions(sel){return GRADES.map(g=>`<option value='${g}' ${g===sel?'selected':''}>${g||'段位・級位を選択'}</option>`).join('');}
 function localTeamByCode(code){return localTeams.find(t=>t.code===code);}
 function createLocalTeam(name){
   let code='';
@@ -743,15 +768,18 @@ async function doShare(){
     const {ss,trimmed}=off?{ss:[],trimmed:false}:compactSessions();
     shareStatus=off?'':(ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません');
     if(off&&!myTeams.length){
-      if(explicitOff&&r)await ref.delete();
+      /* 共有オフでもプロフィールと設定済みの印は残す（記録だけ消す）。
+         丸ごと削除すると初回設定がまた出てしまうため。 */
+      if(explicitOff&&r)await ref.set({v:2,mode:'off',teams:[],name:myName||'',profile:profile,updated:Date.now(),sessions:[]},{merge:true});
       explicitOff=false;lastShared=null;
     }else if(!off&&!ss.length&&!myTeams.length&&!r){
       /* 書き込む内容なし */
     }else{
       const keep=(!off&&!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
-      const key=shareMode+'|'+(myName||'')+'|'+myTeams.join(',')+'|'+JSON.stringify(keep);
-      if(lastShared===null&&r&&((r.mode||'off')+'|'+(r.name||'')+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
-      if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',updated:Date.now(),sessions:keep});lastShared=key;}
+      const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(keep);
+      if(lastShared===null&&r&&((r.mode||'off')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
+      /* merge:true で書く：プロフィールや設定済みの印を消さないため */
+      if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
     }
   }catch(e){
     shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
@@ -895,14 +923,20 @@ function startMembersSync(){
     clearTimeout(timer);memStatus='';members={};
     snap.docs.forEach(d=>{members[d.id]=d.data();});
     if(first){
-      first=false;
+      first=false;membersFirst=true;
       if(shareMode==='off'&&members[myId]&&members[myId].mode)shareMode=members[myId].mode;
+      if(members[myId]){
+        if(members[myId].profile)profile=Object.assign({},members[myId].profile);
+        if(!myName&&members[myId].name)myName=members[myId].name;
+        saveLocalTeams();
+      }
       if(members[myId]&&Array.isArray(members[myId].teams)){
         /* Firestore側の参加チームと、この端末のローカルチームを両方残す */
         myTeams=Array.from(new Set([].concat(myTeams,members[myId].teams)));
         saveLocalTeams();
       }
       scheduleShare();
+      checkOnboarding();
     }
     rerender();
   },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
@@ -1206,6 +1240,156 @@ async function memberBody(uid){
    「メンバーと共有」／「Firebaseで共有する」カードを表示する。
    普通に開いた人には見えない。 */
 function isAdmin(){try{return new URLSearchParams(location.search).get('admin')==='1'||location.hash==='#admin';}catch(e){return location.hash==='#admin';}}
+/* ---- プロフィール画面（別画面） ---- */
+let profileMsg='';
+function renderProfilePage(){
+  const el=document.getElementById('profilePage');if(!el)return;
+  const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
+  const keep={pfName:val('pfName'),pfOrg:val('pfOrg'),pfGrade:val('pfGrade'),pfYears:val('pfYears'),pfBio:val('pfBio')};
+  const p=profile||{};
+  const name=keep.pfName!==''?keep.pfName:(myName||'');
+  const org=keep.pfOrg!==''?keep.pfOrg:(p.org||'');
+  const grade=keep.pfGrade!==''?keep.pfGrade:(p.grade||'');
+  const years=keep.pfYears!==''?keep.pfYears:(p.years||'');
+  const bio=keep.pfBio!==''?keep.pfBio:(p.bio||'');
+  const teams=myTeams.map(id=>{const ti=teamInfo[id]||{};return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>招待コード：<b>${esc(ti.code||'')}</b></div></div></div>`;}).join('');
+  el.innerHTML=`<div class='card'><h2>👤 プロフィール</h2>
+  <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからいつでも変えられます。</p>
+  <div class='profile-field'><label>表示名（必須）</label><input type='text' id='pfName' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(name)}'/></div>
+  <div class='profile-field'><label>所属</label><input type='text' id='pfOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(org)}'/></div>
+  <div class='profile-field'><label>段位・級位</label><select id='pfGrade'>${gradeOptions(grade)}</select></div>
+  <div class='profile-field'><label>弓歴</label><input type='text' id='pfYears' placeholder='例：3年目' maxlength='20' value='${esc(years)}'/></div>
+  <div class='profile-field'><label>ひとこと</label><textarea id='pfBio' rows='3' placeholder='自己紹介など' maxlength='200'>${esc(bio)}</textarea></div>
+  <div class='sess-row'><button class='pri' data-pf-act='save'>保存する</button></div>
+  ${profileMsg?`<p class='hint-text'><b>${esc(profileMsg)}</b></p>`:''}
+  <h2 style='margin:14px 0 4px'>🏷 所属チーム</h2>
+  ${teams||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。チームの参加・作成はランキングページでできます。</p>"}
+  <p class='hint-text' style='text-align:left'>チームの参加・作成・退出はランキングページの「🏷 チーム」でできます。</p></div>`;
+}
+async function saveProfile(){
+  const v=id=>{const x=document.getElementById(id);return x?x.value.trim():'';};
+  const name=v('pfName').slice(0,20);
+  if(!name){profileMsg='表示名を入力してください';renderProfilePage();return;}
+  myName=name;
+  profile={org:v('pfOrg').slice(0,30),grade:v('pfGrade'),years:v('pfYears').slice(0,20),bio:v('pfBio').slice(0,200)};
+  saveLocalTeams();
+  if(dbCap&&myId){
+    try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,updated:Date.now()},{merge:true});}catch(e){}
+    scheduleShare();
+  }
+  profileMsg='保存しました';renderProfilePage();
+}
+
+/* ---- 初回ログイン時のオンボーディング ---- */
+let obStep=1,obChoice='',obMsg='',obDone=false,obProfile={};
+function checkOnboarding(){
+  const g=document.getElementById('onboardOverlay');if(!g)return;
+  const u=authUser();
+  const need=!!dbCap&&membersFirst&&u&&!u.isAnonymous&&!(members[myId]&&members[myId].onboarded)&&!obDone;
+  if(need){obStep=obStep||1;renderOnboard();}
+  else{g.style.display='none';g.innerHTML='';}
+}
+/* 入力中の値をステップをまたいで保持する（画面を作り直しても消えない） */
+function obProfileValues(){
+  const out=Object.assign({},obProfile);
+  const pick=(id,k)=>{const x=document.getElementById(id);if(x)out[k]=x.value.trim();};
+  pick('obName','name');pick('obOrg','org');pick('obGrade','grade');pick('obYears','years');pick('obBio','bio');pick('obCode','code');pick('obTeamName','teamName');
+  return out;
+}
+function renderOnboard(){
+  const g=document.getElementById('onboardOverlay');if(!g)return;
+  const u=authUser();
+  const v=obProfileValues();
+  const defName=myName||(u&&u.displayName)||'';
+  let body='';
+  if(obStep===1){
+    body=`<h2>👤 プロフィールを設定</h2>
+    <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからメニュー →「プロフィール」で変えられます。</p>
+    <div class='profile-field'><label>表示名（必須）</label><input type='text' id='obName' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(v.name||defName)}'/></div>
+    <div class='profile-field'><label>所属</label><input type='text' id='obOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(v.org||'')}'/></div>
+    <div class='profile-field'><label>段位・級位</label><select id='obGrade'>${gradeOptions(v.grade||'')}</select></div>
+    <div class='profile-field'><label>弓歴</label><input type='text' id='obYears' placeholder='例：3年目' maxlength='20' value='${esc(v.years||'')}'/></div>
+    <div class='profile-field'><label>ひとこと</label><textarea id='obBio' rows='3' placeholder='自己紹介など' maxlength='200'>${esc(v.bio||'')}</textarea></div>
+    <div class='sess-row'><button class='pri' data-ob='next'>次へ</button><button data-ob='skip'>あとで設定する</button></div>`;
+  }else if(obStep===2){
+    const joinBox=obChoice==='join'?`<div class='profile-field'><label>招待コード（6文字）</label><input type='text' id='obCode' placeholder='招待コード' maxlength='8' style='text-transform:uppercase' value='${esc(v.code||'')}'/></div>`:'';
+    const createBox=obChoice==='create'?`<div class='profile-field'><label>チーム名</label><input type='text' id='obTeamName' placeholder='チーム名（例：○○高校弓道部）' maxlength='30' value='${esc(v.teamName||'')}'/></div>`:'';
+    const soloBox=obChoice==='solo'?`<p class='hint-text' style='text-align:left'>チームなしで登録します。あとからランキングページでチームに参加・作成できます。</p>`:'';
+    body=`<h2>🏷 チームをえらぶ</h2>
+    <p class='hint-text' style='text-align:left'>どう使いますか？</p>
+    <button class='ob-choice${obChoice==='join'?' sel':''}' data-ob-choice='join'>👥 チームに参加する</button>${joinBox}
+    <button class='ob-choice${obChoice==='create'?' sel':''}' data-ob-choice='create'>＋ チームを作成する</button>${createBox}
+    <button class='ob-choice${obChoice==='solo'?' sel':''}' data-ob-choice='solo'>🙋 個人で使う</button>${soloBox}
+    <div class='sess-row'><button data-ob='back'>戻る</button><button class='pri' data-ob='next'>次へ</button><button data-ob='skip'>あとで設定する</button></div>`;
+  }else{
+    const teamLine=obChoice==='join'?('チームに参加する（招待コード：'+(v.code||'—')+'）'):obChoice==='create'?('チームを作成する（'+(v.teamName||'—')+'）'):obChoice==='solo'?'個人で使う':'—';
+    body=`<h2>✅ 確認</h2>
+    <div style='text-align:left;font-size:.92rem;line-height:1.9'>
+    表示名：<b>${esc(v.name||defName||'—')}</b><br>所属：${esc(v.org||'—')}<br>段位・級位：${esc(v.grade||'—')}<br>弓歴：${esc(v.years||'—')}<br>ひとこと：${esc(v.bio||'—')}<br>チーム：${esc(teamLine)}</div>
+    <div class='sess-row'><button data-ob='back'>戻る</button><button class='pri' data-ob='finish'>はじめる</button></div>`;
+  }
+  g.innerHTML=`<div class='card' style='max-width:480px;margin:16px'>${body}${obMsg?`<p class='hint-text'><b>${esc(obMsg)}</b></p>`:''}</div>`;
+  g.style.display='flex';
+}
+async function obJoinTeam(code){
+  try{
+    const q=await dbCap.collection('teams').where('code','==',code).get();
+    if(q.empty)return false;
+    const d=q.docs[0];
+    if(!myTeams.includes(d.id)){myTeams.push(d.id);teamInfo[d.id]=d.data();st.team=d.id;}
+    scheduleShare();return true;
+  }catch(e){return false;}
+}
+async function obCreateTeam(name){
+  try{
+    let code='';
+    for(let i=0;i<5&&!code;i++){const c=genCode(),q=await dbCap.collection('teams').where('code','==',c).get();if(q.empty)code=c;}
+    if(!code)return false;
+    const ref=dbCap.collection('teams').doc();
+    await ref.set({name,code,owner:myId,created:Date.now()});
+    teamInfo[ref.id]={name,code,owner:myId};myTeams.push(ref.id);st.team=ref.id;
+    scheduleShare();return true;
+  }catch(e){return false;}
+}
+async function finishOnboarding(){
+  const v=obProfileValues();
+  const u=authUser();
+  const name=(v.name||myName||(u&&u.displayName)||'').trim().slice(0,20);
+  if(!name){obMsg='表示名を入力してください';obStep=1;renderOnboard();return;}
+  if(obChoice==='join'){
+    if(!v.code){obMsg='招待コードを入力してください';obStep=2;renderOnboard();return;}
+    if(!await obJoinTeam(v.code.toUpperCase())){obMsg='その招待コードのチームが見つかりませんでした';obStep=2;renderOnboard();return;}
+  }else if(obChoice==='create'){
+    if(!v.teamName){obMsg='チーム名を入力してください';obStep=2;renderOnboard();return;}
+    if(!await obCreateTeam(v.teamName)){obMsg='チームを作成できませんでした';obStep=2;renderOnboard();return;}
+  }
+  myName=name;
+  profile={org:v.org.slice(0,30),grade:v.grade,years:v.years.slice(0,20),bio:v.bio.slice(0,200)};
+  saveLocalTeams();
+  if(dbCap&&myId){
+    try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,onboarded:true,updated:Date.now()},{merge:true});}catch(e){}
+  }
+  obDone=true;obMsg='';
+  const g=document.getElementById('onboardOverlay');if(g){g.style.display='none';g.innerHTML='';}
+  updateTeamBar();setPage('rec');
+}
+async function skipOnboarding(){
+  /* 入力済みのプロフィールだけ残し、設定済みの印をつけて閉じる */
+  const v=obProfileValues();
+  if(v.name)myName=v.name.slice(0,20);
+  profile={org:v.org.slice(0,30),grade:v.grade,years:v.years.slice(0,20),bio:v.bio.slice(0,200)};
+  saveLocalTeams();
+  if(dbCap&&myId){
+    try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,onboarded:true,updated:Date.now()},{merge:true});}catch(e){}
+  }
+  obDone=true;obMsg='';
+  const g=document.getElementById('onboardOverlay');if(g){g.style.display='none';g.innerHTML='';}
+  setPage('rec');
+}
+
+/* ---- ハンバーガーメニュー ---- */
+function closeMenu(){const d=document.getElementById('menuDrawer');if(d)d.style.display='none';}
+function toggleMenu(){const d=document.getElementById('menuDrawer');if(!d)return;d.style.display=d.style.display==='none'?'block':'none';}
 function shareCard(){
   if(!isAdmin())return '';
   if(!dbCap)return `<div class='card'><h2>🔥 Firebaseで共有する</h2>
@@ -1219,7 +1403,7 @@ function shareCard(){
 }
 function renderStats(){
   const pg=document.body.dataset.pg;
-  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();
+  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();else if(pg==='profile')renderProfilePage();
 }
 function renderTrendPage(){
   document.getElementById('trendPage').innerHTML=`<div class='card'><h2>📈 的中推移</h2><div class='btn-group tabs'>${tabs('per',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('type',TYPES)}</div>${trendBody()}</div>`;
@@ -1240,6 +1424,41 @@ async function renderRankPage(){
 }
 
 document.getElementById('nav').addEventListener('click',e=>{const b=e.target.closest('button[data-pg]');if(b)setPage(b.dataset.pg);});
+document.getElementById('menuBtn').addEventListener('click',e=>{e.stopPropagation();toggleMenu();});
+document.addEventListener('click',e=>{const d=document.getElementById('menuDrawer');if(d&&d.style.display!=='none'&&!e.target.closest('#menuDrawer')&&!e.target.closest('#menuBtn'))closeMenu();});
+document.getElementById('menuClose').addEventListener('click',closeMenu);
+document.getElementById('menuDrawer').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-menu]');if(!b)return;
+  const m=b.dataset.menu;closeMenu();
+  if(m==='logout'){if(confirm('ログアウトしますか？記録はこの端末に残ります。'))logoutGoogle();return;}
+  setPage(m);
+});
+document.getElementById('profilePage').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-pf-act]');if(!b)return;
+  if(b.dataset.pfAct==='save')saveProfile();
+});
+document.getElementById('onboardOverlay').addEventListener('click',async e=>{
+  const ch=e.target.closest('button[data-ob-choice]');
+  if(ch){obProfile=obProfileValues();obChoice=ch.dataset.obChoice;obMsg='';renderOnboard();return;}
+  const b=e.target.closest('button[data-ob]');if(!b)return;
+  const act=b.dataset.ob;
+  if(act==='skip'){skipOnboarding();return;}
+  if(act==='back'){obProfile=obProfileValues();obStep=Math.max(1,obStep-1);obMsg='';renderOnboard();return;}
+  if(act==='next'){
+    obProfile=obProfileValues();
+    if(obStep===1){
+      const u=authUser();
+      if(!(obProfile.name||myName||(u&&u.displayName))){obMsg='表示名を入力してください';renderOnboard();return;}
+      obStep=2;obMsg='';renderOnboard();return;
+    }
+    if(obStep===2){
+      if(!obChoice){obMsg='どれか1つ選んでください';renderOnboard();return;}
+      obStep=3;obMsg='';renderOnboard();return;
+    }
+    return;
+  }
+  if(act==='finish'){finishOnboarding();return;}
+});
 document.getElementById('authBar').addEventListener('click',authBarClick);
 document.getElementById('loginGate').addEventListener('click',authBarClick);
 ['trendPage','rankPage'].forEach(id=>{
