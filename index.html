@@ -71,6 +71,8 @@ input[type=date],input[type=text]{font:inherit;font-size:.9rem;padding:7px 8px;b
 .nav{display:flex;gap:6px;margin-bottom:12px;position:sticky;top:0;z-index:20;background:var(--bg);padding:8px 0}
 .nav button{flex:1;padding:10px 4px;font-size:.88rem}
 .team-bar{font-size:.78rem;color:var(--muted);text-align:center;margin:-4px 0 10px}
+.auth-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin:-2px 2px 10px}
+.auth-bar button{padding:4px 10px;font-size:.8rem}
 .pg-trend,.pg-rank{display:none}
 body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank{display:block}
 body[data-pg=trend] .pg-rec,body[data-pg=rank] .pg-rec{display:none}
@@ -115,6 +117,7 @@ input[type=file]{display:none}
     <button data-pg='rank'>🏅 ランキング</button>
   </nav>
   <div class='team-bar' id='teamBar'></div>
+  <div class='auth-bar' id='authBar'></div>
   <div class='pg-trend' id='trendPage'></div>
   <div class='pg-rank' id='rankPage'></div>
 
@@ -768,6 +771,8 @@ function rerender(){if(document.body.dataset.pg!=='rec')renderStats();}
    既存コードが期待する doc()/collection()/onSnapshot()/where().get() と
    同じ形なので、dbCap に firebase.firestore() をそのまま渡せる。
    ログインは匿名認証（メール登録なし。端末ごとに1つのuidが保存される）。
+   Googleログインも使える：匿名アカウントにGoogleを連携するので、
+   ログイン前の記録・チームは同じuidのまま引き継がれる。
    config は Firebaseコンソールで発行されるものを、この端末の localStorage にだけ保存する。 */
 let firebaseConfig=null,firebaseStatus='',firebaseProject='';
 /* 公開用：ここに firebaseConfig を入れておくと、開いた人全員が
@@ -820,6 +825,50 @@ function clearFirebaseConfig(){
   try{localStorage.removeItem('kyudo_firebase_config_v1');}catch(e){}
   location.reload();
 }
+/* ---- Googleログイン ----
+   匿名アカウントにGoogleを連携（linkWithPopup）するので、
+   ログイン前の記録・チームは同じuidのまま引き継がれる。
+   ポップアップがブロックされた端末ではリダイレクト方式に切り替える。
+   ログイン／ログアウト後はページを読み込み直して認証状態を反映する。 */
+let authMsg='';
+function googleProvider(){const p=new firebase.auth.GoogleAuthProvider();p.setCustomParameters({prompt:'select_account'});return p;}
+function authUser(){try{return firebase.auth().currentUser;}catch(e){return null;}}
+function updateAuthBar(){
+  const el=document.getElementById('authBar');if(!el)return;
+  if(!dbCap){el.innerHTML='';return;}
+  const u=authUser();
+  if(u&&!u.isAnonymous){
+    el.innerHTML=`<span>👤 ${esc(u.displayName||u.email||'Googleアカウント')} でログイン中</span><button data-auth-act='logout'>ログアウト</button>`;
+  }else{
+    el.innerHTML=`<span>ゲストで利用中</span><button class='pri' data-auth-act='google'>Googleでログイン</button>`;
+  }
+  if(authMsg)el.innerHTML+=`<span style='color:#b83b3b'>${esc(authMsg)}</span>`;
+}
+async function loginWithGoogle(){
+  if(typeof firebase==='undefined'||!dbCap){authMsg='まずFirebaseに接続してください';updateAuthBar();return;}
+  try{
+    const auth=firebase.auth(),cur=auth.currentUser;
+    if(cur&&cur.isAnonymous){
+      try{await cur.linkWithPopup(googleProvider());}
+      catch(e){
+        if(e&&e.code==='auth/credential-already-in-use'&&e.credential){await auth.signInWithCredential(e.credential);}
+        else if(e&&e.code==='auth/popup-blocked'){await cur.linkWithRedirect(googleProvider());return;}
+        else throw e;
+      }
+    }else{
+      try{await auth.signInWithPopup(googleProvider());}
+      catch(e){if(e&&e.code==='auth/popup-blocked'){await auth.signInWithRedirect(googleProvider());return;}throw e;}
+    }
+    location.reload();
+  }catch(e){
+    authMsg='Googleログインできませんでした：'+((e&&e.message)||e)+'（FirebaseコンソールでGoogleログインを有効にしたか確認してください）';
+    updateAuthBar();
+  }
+}
+async function logoutGoogle(){
+  try{const auth=firebase.auth();await auth.signOut();await auth.signInAnonymously();location.reload();}
+  catch(e){authMsg='ログアウトできませんでした：'+((e&&e.message)||e);updateAuthBar();}
+}
 function startMembersSync(){
   let first=true;
   const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
@@ -847,6 +896,8 @@ async function initFirebase(){
     if(!firebase.apps.length)firebase.initializeApp(cfg);
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
+    try{await auth.getRedirectResult();}catch(e){authMsg='Googleログインできませんでした：'+((e&&e.message)||e);}
+    auth.onAuthStateChanged(u=>{if(u){if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();}});
     if(!auth.currentUser)await auth.signInAnonymously();
     const user=auth.currentUser;
     if(!user)return false;
@@ -865,11 +916,14 @@ async function initFirebase(){
       }
     };
     myId=user.uid;
+    if(user.displayName&&!myName){myName=user.displayName;saveLocalTeams();}
     firebaseStatus='Firebase Firestore（'+firebaseProject+'）に接続中';
     startMembersSync();
+    updateAuthBar();
     return true;
   }catch(e){
     firebaseStatus='Firebaseに接続できませんでした：'+((e&&e.message)||e)+'（Authenticationで「匿名」を有効にしたか、configを確認してください）';
+    updateAuthBar();
     return false;
   }
 }
@@ -1150,6 +1204,7 @@ async function renderRankPage(){
 }
 
 document.getElementById('nav').addEventListener('click',e=>{const b=e.target.closest('button[data-pg]');if(b)setPage(b.dataset.pg);});
+document.getElementById('authBar').addEventListener('click',e=>{const b=e.target.closest('button[data-auth-act]');if(!b)return;if(b.dataset.authAct==='google')loginWithGoogle();else if(b.dataset.authAct==='logout'){if(confirm('ログアウトしますか？記録はこの端末に残ります。'))logoutGoogle();}});
 ['trendPage','rankPage'].forEach(id=>{
   const tp=document.getElementById(id);
   tp.addEventListener('click',e=>{
