@@ -990,7 +990,7 @@ function teamCard(){
     <h2 style='margin:12px 0 4px'>👥 チーム名簿</h2>
     ${t==='all'?`<p class='hint-text' style='text-align:left'>名簿を見るには、上のチームで「表示」を選んでください。</p>`:roster||`<p class='hint-text' style='text-align:left'>まだ名簿がありません。下から部員・仲間の名前を追加できます。</p>`}
     ${t!=='all'?`<div class='sess-row'><input type='text' id='memberName' placeholder='部員・仲間の名前' maxlength='20' style='flex:1;min-width:0'/><button class='pri' data-team-act='addMember'>名簿に追加</button></div>`:''}
-    <p class='hint-text' style='text-align:left'>チームはランキングで比較するグループです。招待コードを部員・仲間に伝えると、同じチームで比較できます。この端末に保存される登録です。記録そのものの共有は、下の「メンバーと共有」（共有環境）または同じ端末での名簿管理で行います。</p></div>`;
+    <p class='hint-text' style='text-align:left'>チームはランキングで比較するグループです。招待コードを部員・仲間に伝えると、同じチームで比較できます。この端末に保存される登録です。${isAdmin()?'記録そのものの共有は、下の「メンバーと共有」（共有環境）または同じ端末での名簿管理で行います。':'記録そのものの共有は、同じ端末での名簿管理で行います。'}</p></div>`;
   }
   const list=myTeams.map(id=>{
     const ti=teamInfo[id]||{},cnt=Object.values(members).filter(m=>m&&Array.isArray(m.teams)&&m.teams.includes(id)).length;
@@ -1088,7 +1088,7 @@ async function rankBody(){
   const medals=['🥇','🥈','🥉'];
   const tot=rows.reduce((a,r)=>({n:a.n+r.b.n,h:a.h+r.b.h,kai:a.kai+r.b.kai}),{n:0,h:0,kai:0});
   const list=rows.map((r,i)=>`<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`).join('');
-  const note=ids.length<2?`<p class='hint-text'>${t==='all'?'共有しているメンバーがまだいません。':'このチームで記録を共有しているメンバーがまだいません。'}下の「メンバーと共有」をオンにして、仲間にも共有してもらいましょう。</p>`:`<p class='hint-text'>${ids.length}人で比較中（タップでその人の記録を表示）</p>`;
+  const note=ids.length<2?`<p class='hint-text'>${t==='all'?'共有しているメンバーがまだいません。':'このチームで記録を共有しているメンバーがまだいません。'}${isAdmin()?'下の「メンバーと共有」をオンにして、仲間にも共有してもらいましょう。':''}</p>`:`<p class='hint-text'>${ids.length}人で比較中（タップでその人の記録を表示）</p>`;
   const bestRows=bucketsOf(store.sessions,per,st.type).filter(b=>b.n>=4).sort((a,b)=>b.h/b.n-a.h/a.n||b.h-a.h).slice(0,5)
     .map((b,i)=>`<div class='rank-row'><div class='rank-no'>${i+1}位</div><div class='rank-main'>${bucketLabel(b.key,per)}</div><div class='rank-val'>${pct(b)}%<div class='vtag'>${b.h}/${b.n}</div></div></div>`).join('');
   return teamSel+sortTabs+`<div class='sess-row'><span style='font-size:.82rem'>対象期間：</span><select data-k='sel'>${keys.map(k=>`<option value='${k}' ${k===sel?'selected':''}>${bucketLabel(k,per)}</option>`).join('')}</select></div>`
@@ -1112,7 +1112,12 @@ async function memberBody(uid){
     +(tot.n?`<div class='diag-summary'>${per==='year'?'年':per==='month'?'月':per==='week'?'週':'日'}別の推移　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg(series,per)}${legend}`:'')
     +`<div class='history-list'>${rows||'<div style="color:var(--muted);">該当する記録がありません</div>'}</div>`;
 }
+/* 管理者だけが開ける設定：URL に ?admin=1 または #admin を付けたときだけ
+   「メンバーと共有」／「Firebaseで共有する」カードを表示する。
+   普通に開いた人には見えない。 */
+function isAdmin(){try{return new URLSearchParams(location.search).get('admin')==='1'||location.hash==='#admin';}catch(e){return location.hash==='#admin';}}
 function shareCard(){
+  if(!isAdmin())return '';
   if(!dbCap)return `<div class='card'><h2>🔥 Firebaseで共有する</h2>
   <p class='hint-text' style='text-align:left'>まだFirestoreに接続していません。Firebaseコンソールでプロジェクトを作り、ウェブアプリの <b>firebaseConfig</b> を下に貼ると、この端末から共有が始まります。設定はこの端末のブラウザにだけ保存されます。</p>
   <textarea id='fbConfigInput' rows='6' style='width:100%;font:inherit;font-size:.8rem;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--btn);color:var(--text)' placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'></textarea>
