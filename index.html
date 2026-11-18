@@ -296,8 +296,41 @@ const dbClear=()=>dbTx('readwrite',s=>s.clear()).catch(()=>{});
 function loadShots(){
   try{const r=localStorage.getItem(STORAGE_KEY);const a=r?JSON.parse(r):[];return Array.isArray(a)?a:[];}catch(e){return [];}
 }
+/* 他タブで保存された端末内データを、端末内の store と統合する
+   （2タブ同時使用で、片方の記録がもう片方の保存で消えないようにするため）。
+   同IDは端末内を優先。両方の deletedSessionIds も統合し、そのIDのセッションは両方から除く。
+   persistStore() からは呼ばない（clearLocalUserData が persistStore() を呼ぶため、
+   統合すると消したはずの記録が復活してしまう）。 */
+function mergeStoreFromStorage(){
+  let raw=null;
+  try{raw=localStorage.getItem(STORE_KEY);}catch(e){}
+  if(!raw)return false;
+  let o=null;
+  try{o=JSON.parse(raw);}catch(e){return false;}
+  if(!o||!Array.isArray(o.sessions)||!o.sessions.length)return false;
+  let storedDeleted=new Set();
+  try{storedDeleted=new Set(JSON.parse(localStorage.getItem(DELETED_KEY)||'[]'));}catch(e){}
+  storedDeleted.forEach(id=>deletedSessionIds.add(id));
+  const byId=new Map();
+  let changed=false;
+  store.sessions.forEach(s=>{if(s&&s.id&&!deletedSessionIds.has(s.id))byId.set(s.id,s);else if(s&&s.id)changed=true;});
+  o.sessions.forEach(x=>{
+    if(!x||!x.id||deletedSessionIds.has(x.id))return;
+    if(byId.has(x.id))return;
+    byId.set(x.id,x);changed=true;
+  });
+  if(changed){
+    store.sessions=[...byId.values()];
+    if(!store.sessions.length)store.sessions.push(newSess());
+    if(!store.sessions.some(s=>s.id===store.currentId))store.currentId=store.sessions[store.sessions.length-1].id;
+    shots=curSession().shots;
+  }
+  saveDeletedIds();
+  return changed;
+}
 let storeSaveWarned=false;
 function saveShots(){
+  try{mergeStoreFromStorage();}catch(e){}
   try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}
   catch(e){
     shareStatus='端末への保存に失敗しました。空き容量をご確認ください';
@@ -746,6 +779,33 @@ async function flushOldUserData(prevUid){
     return true;
   }catch(e){return false;}
 }
+/* 切替時に共有できなかった記録の退避先（kyudo_backup_{uid}）があれば、
+   セッションだけ端末内に戻して共有し直す（名前・プロフィール・チーム・名簿・同意は復元しない）。
+   統合が終わったら退避キーを削除する（統合済みの記録は端末内に残るため）。 */
+function restoreBackup(uid){
+  if(!uid)return 0;
+  let raw=null;
+  try{raw=localStorage.getItem('kyudo_backup_'+uid);}catch(e){}
+  if(!raw)return 0;
+  let n=0;
+  try{
+    const o=JSON.parse(raw);
+    const arr=o&&Array.isArray(o.sessions)?o.sessions:null;
+    if(arr){
+      const byId=new Map(store.sessions.map(s=>[s.id,s]));
+      arr.forEach(x=>{
+        if(!x||!x.id||!x.date)return;
+        if(deletedSessionIds.has(x.id))return;
+        if(byId.has(x.id))return;
+        byId.set(x.id,x);n++;
+      });
+      if(n){store.sessions=[...byId.values()];shots=curSession().shots;persistStore();}
+    }
+  }catch(e){}
+  try{localStorage.removeItem('kyudo_backup_'+uid);}catch(e){}
+  if(n){try{alert('バックアップから'+n+'件の記録を復元しました。数秒後に共有されます。');}catch(e){}try{scheduleShare();}catch(e){}}
+  return n;
+}
 /* ログイン中のユーザーが前回と違う Google ユーザーなら、端末内のデータを消す。
    匿名→Google の連携（uid が変わらない場合）は引き継がれる。 */
 let authSwitching=false;
@@ -767,6 +827,8 @@ async function noteAuthUser(u){
       clearLocalUserData();updateTeamBar();renderStats();renderAll();updateAuthBar();
     }
     try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
+    /* 切替時に共有できなかった記録の退避先があれば、このユーザー分を復元する */
+    restoreBackup(u.uid);
     /* 認証が確定したのでバーを表示してよい（チームバーもここで描き直す） */
     authReady=true;updateTeamBar();
   }finally{authSwitching=false;}
@@ -1119,7 +1181,11 @@ function adoptMembersDoc(){
   saveLocalTeams();
   updateAuthBar();updateTeamBar();loadTeams();
 }
+/* メンバー同期は一度だけ開始する（認証が遅れて届いた場合の二重開始を防ぐ） */
+let membersSyncStarted=false;
 function startMembersSync(){
+  if(membersSyncStarted)return;
+  membersSyncStarted=true;
   let first=true;
   const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
   dbCap.collection('members').onSnapshot(snap=>{
@@ -1142,7 +1208,7 @@ async function initFirebase(){
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
     try{await auth.getRedirectResult();}catch(e){authMsg='Googleログインできませんでした：'+((e&&e.message)||e);}
-    auth.onAuthStateChanged(async u=>{if(u){await noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();}});
+    auth.onAuthStateChanged(async u=>{if(u){if(myId!==u.uid)myId=u.uid;await noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();if(!u.isAnonymous)startMembersSync();}});
     dbCap=firebase.firestore();
     userCap={
       id:async()=>auth.currentUser?auth.currentUser.uid:'',
@@ -1792,7 +1858,21 @@ function shareCard(){
   ${firebaseStatus?`<p class='hint-text'><b>${esc(firebaseStatus)}</b></p>`:''}
   <p class='hint-text' style='text-align:left'>手順：① console.firebase.google.com でプロジェクト作成（場所：asia-northeast1）②「Firestore Database」を作成 ③「Authentication → ログイン方法」で匿名を有効化 ④「プロジェクトの設定 → マイアプリ → ウェブアプリ」で config をコピー ⑤ Firestoreの「ルール」に firestore.rules を貼って公開する。</p></div>`;
   const btns=`<p class='hint-text' style='text-align:left'><b>共有：すべて共有（常にON）</b></p>`;
-  return `<div class='card'><h2>👥 メンバーと共有</h2>${btns}<p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p><div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
+  /* 診断表示（管理者専用）：端末内と共有先の記録数、最後の共有、退避データ、uid */
+  let diag='';
+  try{
+    const ls=store.sessions.filter(s=>s&&s.shots&&s.shots.length);
+    const lN=ls.length,lM=ls.reduce((a,s)=>a+s.shots.length,0);
+    const rm=(members[myId]&&Array.isArray(members[myId].sessions))?members[myId].sessions:[];
+    const rN=rm.filter(x=>x&&x.s&&x.s.length).length,rM=rm.reduce((a,x)=>a+((x&&x.s)?x.s.length:0),0);
+    const st=shareStatus||(lastShared?'共有済み':'未共有');
+    let bN=null;
+    try{const b=JSON.parse(localStorage.getItem('kyudo_backup_'+myId)||'null');if(b&&Array.isArray(b.sessions))bN=b.sessions.length;}catch(e){}
+    let owner='';
+    try{owner=localStorage.getItem(OWNER_KEY)||'';}catch(e){}
+    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}<br>退避データ：${bN===null?'なし':bN+'件'}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}</p>`;
+  }catch(e){}
+  return `<div class='card'><h2>👥 メンバーと共有</h2>${btns}<p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p>${diag}<div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
 }
 function renderStats(){
   const pg=document.body.dataset.pg;
@@ -1906,16 +1986,18 @@ document.getElementById('loginGate').addEventListener('click',authBarClick);
 window.addEventListener('hashchange',applyHash);
 /* 別タブで記録が変わったら、このタブの表示も読み直す（2タブ同時使用で上書きされないようにするため） */
 window.addEventListener('storage',e=>{
-  if(e.key!==STORE_KEY||!e.newValue)return;
-  try{
-    const o=JSON.parse(e.newValue);
-    if(o&&Array.isArray(o.sessions)&&o.sessions.length){
-      store=o;
-      if(!store.sessions.some(s=>s.id===store.currentId))store.currentId=store.sessions[store.sessions.length-1].id;
-      shots=curSession().shots;
-      renderAll();renderStats();
-    }
-  }catch(err){}
+  if(e.key===STORE_KEY&&e.newValue){
+    /* 置き換えではなく統合する（他タブの保存でこのタブの記録が消えないようにするため） */
+    try{mergeStoreFromStorage();}catch(err){}
+    renderAll();renderStats();
+  }else if(e.key==='kyudo_local_teams_v1'&&e.newValue){
+    try{
+      const lt=JSON.parse(e.newValue);
+      if(lt&&Array.isArray(lt.teams))localTeams=lt.teams;
+      if(lt&&lt.roster&&typeof lt.roster==='object')localRoster=lt.roster;
+      updateTeamBar();renderStats();
+    }catch(err){}
+  }
 });
 applyHash();
 
