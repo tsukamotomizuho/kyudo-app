@@ -628,7 +628,7 @@ function aiPaywallHtml(){
 }
 let lastDiag=null;      /* updateDiagnosis() が入れる構造化された診断結果 */
 let diagChecked=[];     /* ユーザーがチェックした原因項目の index */
-let aiCurrentText='',aiCurrentNote='',aiBusy=false,aiHistOpen=-1;
+let aiCurrentText='',aiCurrentNote='',aiBusy=false,aiHistOpen=-1,aiLastError=null;
 function aiTodayStr(){return dstr(new Date());}
 function aiLastDate(){try{return localStorage.getItem(AI_LAST_KEY)||'';}catch(e){return '';}}
 function aiSetLastDate(d){try{localStorage.setItem(AI_LAST_KEY,d);}catch(e){}}
@@ -702,7 +702,7 @@ async function runAiAnalysis(){
     aiCurrentText='';aiCurrentNote='まず的をタップして1本以上記録してください。';
     renderAiBox();return;
   }
-  aiBusy=true;aiCurrentNote='AIが分析しています…';aiCurrentText='';renderAiBox();
+  aiBusy=true;aiCurrentNote='AIが分析しています…';aiCurrentText='';aiLastError=null;renderAiBox();
   try{
     const prompt=buildAiPrompt();
     const text=await callGemini(prompt);
@@ -713,6 +713,9 @@ async function runAiAnalysis(){
     aiSetLastDate(today);
   }catch(e){
     aiCurrentText='';aiCurrentNote=aiErrorMessage(e);
+    /* 失敗の本当の理由（コードと内容）を残す。画面と管理者診断に表示する */
+    aiLastError={code:String((e&&e.code)||''),message:String((e&&e.message)||e||'')};
+    try{window.__aiLastError=(aiLastError.code?aiLastError.code+'：':'')+aiLastError.message;}catch(err){}
   }
   aiBusy=false;renderAiBox();
 }
@@ -729,6 +732,7 @@ function renderAiBox(){
     <p class='hint-text' style='text-align:left'>診断結果と的中率の推移をAIが分析します。1日1回まで。名前・メールは送られません。</p>
     ${aiSubscriptionActive()?'':aiPaywallHtml()}
     ${aiCurrentNote?`<p class='hint-text' style='text-align:left'><b>${esc(aiCurrentNote)}</b></p>`:''}
+    ${aiLastError?`<p class='hint-text' style='text-align:left;font-size:.75rem'>エラー詳細：${esc(aiLastError.code?aiLastError.code+'：':'')}${esc(aiLastError.message)}</p>`:''}
     ${aiCurrentText?`<div id='aiResult' class='diag-summary' style='white-space:pre-wrap'>${esc(aiCurrentText)}</div>`:''}
     <h2 style='margin:12px 0 4px'>🕘 過去のAI分析</h2>
     <div id='aiHistoryList'>${items||`<p class='hint-text' style='text-align:left'>まだAI分析の履歴がありません。</p>`}</div>
@@ -2548,7 +2552,7 @@ function shareCard(){
     }catch(e){}
     let owner='';
     try{owner=localStorage.getItem(OWNER_KEY)||'';}catch(e){}
-    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}${lastShareError?'<br>直近の共有エラー：'+esc(lastShareError):''}<br>退避データ：${bN===null?'なし':bN+'件'}${uK?'<br>無名の退避データ：'+uN+'件（'+uK+'キー）':''}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}<br>共有済みID：${sharedIds.size}件／共有先で見たID：${seenRemoteIds.size}件／削除したID：${deletedSessionIds.size}件${authSwitchNote?'<br>'+esc(authSwitchNote):''}</p>`;
+    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}${lastShareError?'<br>直近の共有エラー：'+esc(lastShareError):''}<br>退避データ：${bN===null?'なし':bN+'件'}${uK?'<br>無名の退避データ：'+uN+'件（'+uK+'キー）':''}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}<br>共有済みID：${sharedIds.size}件／共有先で見たID：${seenRemoteIds.size}件／削除したID：${deletedSessionIds.size}件${authSwitchNote?'<br>'+esc(authSwitchNote):''}${aiLastError?'<br>AI分析の直近エラー：'+esc((aiLastError.code?aiLastError.code+'：':'')+aiLastError.message):''}<br>AI準備：${esc(window.__aiReady?'準備OK':(window.__aiNotConfigured?'未設定':(window.__aiError?'初期化エラー':(typeof window.__geminiGenerate==='function'?'準備OK':'初期化中'))))}${window.__aiError?'<br>AI初期化エラー：'+esc(String(window.__aiError)):''}</p>`;
   }catch(e){}
   return `<div class='card'><h2>👥 メンバーと共有</h2>${btns}<p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p>${diag}<div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
 }
