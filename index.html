@@ -2546,20 +2546,22 @@ applyHash();
    compat SDK（v10.12.2）とは別にモジュール版 SDK（v13.4.0）を使い、
    'ai' という名前のアプリとして初期化する。APIキーはクライアントに
    埋め込まない（Firebase AI Logic のプロキシがサーバー側で鍵を差し込む）。
-   App Check（reCAPTCHA v3）が必須。サイトキーは Firebase コンソールで取得し、
-   下の RECAPTCHA_V3_SITE_KEY に貼ること（README-公開手順.md の「AI版の設定」参照）。 */
+   App Check（reCAPTCHA Enterprise）が必須。サイトキーは Google Cloud
+   コンソールの Fraud Defense で作り、下の RECAPTCHA_ENTERPRISE_SITE_KEY
+   に貼ること。reCAPTCHA Classic（v3）はコンソールで新規登録を受け付け
+   なくなったため使わない。 */
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app.js';
-import {initializeAppCheck,ReCaptchaV3Provider} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app-check.js';
+import {initializeAppCheck,ReCaptchaEnterpriseProvider} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app-check.js';
 import {getAI,GoogleAIBackend,getGenerativeModel} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-ai.js';
-const RECAPTCHA_V3_SITE_KEY='6LdvOyYuAAAAALKBU0JGYys9SgNHLUaGeTTuRBCT';
+const RECAPTCHA_ENTERPRISE_SITE_KEY='YOUR_RECAPTCHA_ENTERPRISE_SITE_KEY';
 const AI_MODEL_MODULE='gemini-3.5-flash-lite';
 try{
   const cfg=window.__FIREBASE_CONFIG__||null;
   if(!cfg||!cfg.apiKey){window.__aiNotConfigured=true;throw new Error('no firebase config');}
-  if(!RECAPTCHA_V3_SITE_KEY||RECAPTCHA_V3_SITE_KEY==='YOUR_RECAPTCHA_V3_SITE_KEY'){window.__aiNotConfigured=true;}
+  if(!RECAPTCHA_ENTERPRISE_SITE_KEY||RECAPTCHA_ENTERPRISE_SITE_KEY==='YOUR_RECAPTCHA_ENTERPRISE_SITE_KEY'){window.__aiNotConfigured=true;}
   else{
     const aiApp=initializeApp(cfg,'ai');
-    initializeAppCheck(aiApp,{provider:new ReCaptchaV3Provider(RECAPTCHA_V3_SITE_KEY),isTokenAutoRefreshEnabled:true});
+    initializeAppCheck(aiApp,{provider:new ReCaptchaEnterpriseProvider(RECAPTCHA_ENTERPRISE_SITE_KEY),isTokenAutoRefreshEnabled:true});
     const ai=getAI(aiApp,{backend:new GoogleAIBackend(),useLimitedUseAppCheckTokens:true});
     window.__geminiGenerate=async(prompt)=>{
       const model=getGenerativeModel(ai,{model:AI_MODEL_MODULE});
