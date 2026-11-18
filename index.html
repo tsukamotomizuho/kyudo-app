@@ -279,7 +279,8 @@ let store=loadStore();
 {
   store.currentId=curSession().id;
   const cs=curSession();
-  if(cs.date!==todayStr()&&cs.shots.length){const ns=newSess();store.sessions.push(ns);store.currentId=ns.id;}
+  if(cs.date!==todayStr()&&cs.shots.length&&!cs.manualDate){const ns=newSess();store.sessions.push(ns);store.currentId=ns.id;}
+  else if(cs.date!==todayStr()&&!cs.shots.length&&!cs.manualDate){cs.date=todayStr();}
 }
 let shots=curSession().shots;
 const videoUrlMap={};
@@ -295,7 +296,15 @@ const dbClear=()=>dbTx('readwrite',s=>s.clear()).catch(()=>{});
 function loadShots(){
   try{const r=localStorage.getItem(STORAGE_KEY);const a=r?JSON.parse(r):[];return Array.isArray(a)?a:[];}catch(e){return [];}
 }
-function saveShots(){try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}catch(e){}try{scheduleShare();}catch(e){}}
+let storeSaveWarned=false;
+function saveShots(){
+  try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}
+  catch(e){
+    shareStatus='端末への保存に失敗しました。空き容量をご確認ください';
+    if(!storeSaveWarned){storeSaveWarned=true;try{alert('記録を端末に保存できませんでした。空き容量をご確認ください。');}catch(err){}}
+  }
+  try{scheduleShare();}catch(e){}
+}
 
 function setTargetType(t){
   targetType=t;
@@ -361,6 +370,10 @@ function draw(){
 }
 
 canvas.addEventListener('click',e=>{
+  /* 日をまたいで開きっぱなしの場合：手動で日付を変えたセッションでなく、
+     日付が今日でなく、射が1本以上あるときは、今日の新しいセッションを作ってから記録する */
+  const cs0=curSession();
+  if(!cs0.manualDate&&cs0.date!==todayStr()&&cs0.shots.length){const ns=newSess();store.sessions.push(ns);store.currentId=ns.id;shots=ns.shots;}
   const r=canvas.getBoundingClientRect();
   const cx=(e.clientX-r.left)*canvas.width/r.width;
   const cy=(e.clientY-r.top)*canvas.height/r.height;
@@ -369,7 +382,7 @@ canvas.addEventListener('click',e=>{
   const idx=shots.length, arrowNum=(idx%4)+1;
   histStand=null;
   shots.push({
-    id:Date.now()+'_'+idx,
+    id:Date.now()+'_'+Math.random().toString(36).slice(2,6)+'_'+idx,
     stand:Math.floor(idx/4)+1,
     arrowNum,
     arrowType:arrowNum%2===1?'甲矢':'乙矢',
@@ -613,13 +626,19 @@ function deleteSession(){
   const c=curSession();
   if(!confirm(`${c.date.replace(/-/g,'/')} の${c.type==='match'?'試合':'練習'}セッション（${c.shots.length}本）を削除しますか？動画も削除されます。`))return;
   dropVideos(c.shots);
+  markSessionDeleted(c.id);
   store.sessions=store.sessions.filter(s=>s.id!==c.id);
   if(!store.sessions.length)store.sessions.push(newSess());
   const last=store.sessions.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id)).pop();
   store.currentId=last.id;shots=last.shots;histStand=null;
   saveShots();renderAll();
 }
-document.getElementById('sessDate').addEventListener('change',e=>{curSession().date=e.target.value||todayStr();saveShots();renderSessionList();});
+document.getElementById('sessDate').addEventListener('change',e=>{
+  const c=curSession(),nv=e.target.value||todayStr();
+  /* 射があるセッションの日付を変えるときだけ確認する（空のセッションは確認なし） */
+  if(c.shots.length&&c.date!==nv&&!confirm('このセッションの日付を変えますか？（中の射はすべて新しい日付に移動します）')){e.target.value=c.date;return;}
+  c.date=nv;c.manualDate=true;saveShots();renderSessionList();
+});
 document.getElementById('sessTitle').addEventListener('input',e=>{curSession().title=e.target.value;saveShots();renderSessionList();});
 document.getElementById('sessList').addEventListener('click',e=>{const b=e.target.closest('button[data-id]');if(b)switchSession(b.dataset.id);});
 
@@ -628,7 +647,7 @@ function setHistStand(n){histStand=n;renderHistory();}
 
 /* ---- ページ切替（#rec / #trend / #rank） ---- */
 document.querySelectorAll('.container > .card').forEach(c=>c.classList.add('pg-rec'));
-const st={per:'day',type:'all',view:'trend',sel:null,day:null,sort:'rate',member:'',team:''};
+const st={per:'day',type:'all',view:'trend',sel:null,day:null,sort:'rate',member:'',team:'',tper:'day',ttype:'all',tmember:''};
 const PERS=[['year','年'],['month','月'],['week','週'],['day','日']];
 const TYPES=[['all','すべて'],['practice','🏹 練習'],['match','🏆 試合']];
 const SORTS=[['rate','的中率順'],['hits','的中本数順']];
@@ -685,6 +704,8 @@ const pct=b=>Math.round(b.h/b.n*100);
 
 /* ---- メンバー共有（db） ---- */
 let myId=null,dbCap=null,userCap=null,members={},memStatus='',shareStatus='',membersFirst=false;
+/* 認証が確定するまでチームバー・認証バーは空表示にする（前の人のデータが一瞬見えないようにするため） */
+let authReady=false;
 let myTeams=[],teamInfo={},teamMsg='';
 /* 共有への同意（Firestore の自分のドキュメントから読み込む） */
 let consent=null;
@@ -699,6 +720,9 @@ function clearLocalUserData(){
   myTeams=[];myName='';profile={};localTeams=[];localRoster={};consent=null;
   teamInfo={};st.team='all';st.member='';
   lastShared=null;obDone=false;obStep=1;obChoice='';obMsg='';obProfile={};consentDone=false;
+  members={};membersFirst=false;st.sel=null;st.day=null;teamMsg='';profileMsg='';
+  seenRemoteIds=new Set();deletedSessionIds=new Set();
+  try{localStorage.removeItem(SEEN_KEY);localStorage.removeItem(DELETED_KEY);}catch(e){}
   persistStore();saveLocalTeams();
   shareMode='all';
   try{localStorage.setItem('kyudo_share','all');}catch(e){}
@@ -707,23 +731,45 @@ function clearLocalUserData(){
    送れなかった記録が、切替時の消去で失われないようにするため。
    送れなくても消去は進める（消さないと前の人のデータが新しい人に混ざるため）。 */
 async function flushOldUserData(prevUid){
-  if(!dbCap||!prevUid)return;
+  if(!dbCap||!prevUid)return false;
+  /* await の前に必要な値をローカル変数へ退避する（この間に消去が走っても空値を書かないため） */
+  const fMode=shareMode,fTeams=myTeams.slice(),fName=myName||'',fProfile=Object.assign({},profile),fRoster=Object.assign({},localRoster),fConsent=consent?Object.assign({},consent):null;
   try{
-    const {ss}=compactSessions();
+    /* 切替時はトリミングせず全量送る（古い記録が消えないようにするため） */
+    const {ss}=compactSessions(Number.POSITIVE_INFINITY);
     const ref=dbCap.doc('members/'+prevUid);
     const snap=await ref.get();
     const r=snap&&snap.exists?snap.data():null;
-    const keep=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
-    await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:consent||null,updated:Date.now(),sessions:keep},{merge:true});
-  }catch(e){}
+    const keepRaw=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
+    const keep=keepRaw.filter(x=>x&&!deletedSessionIds.has(x.id));
+    await ref.set({v:2,mode:fMode,teams:fTeams,name:fName,profile:fProfile,roster:fRoster,consent:fConsent,updated:Date.now(),sessions:keep},{merge:true});
+    return true;
+  }catch(e){return false;}
 }
 /* ログイン中のユーザーが前回と違う Google ユーザーなら、端末内のデータを消す。
    匿名→Google の連携（uid が変わらない場合）は引き継がれる。 */
+let authSwitching=false;
 async function noteAuthUser(u){
-  if(!u||u.isAnonymous)return;
-  let prev=null;try{prev=localStorage.getItem(OWNER_KEY);}catch(e){}
-  if(prev&&prev!==u.uid){await flushOldUserData(prev);clearLocalUserData();updateTeamBar();renderStats();}
-  try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
+  if(!u||u.isAnonymous){authReady=true;updateTeamBar();return;}
+  /* 二重呼び出し対策：処理中は2回目を捨てる（同じサインインで2回走るため） */
+  if(authSwitching)return;
+  authSwitching=true;
+  try{
+    let prev=null;try{prev=localStorage.getItem(OWNER_KEY);}catch(e){}
+    const hasLocalData=!!(myName||myTeams.length||(store&&store.sessions.some(s=>s.shots&&s.shots.length)));
+    if(prev&&prev!==u.uid){
+      const ok=await flushOldUserData(prev);
+      /* 送れなかった場合は端末内データを別キーに退避してから消す */
+      if(!ok){try{localStorage.setItem('kyudo_backup_'+prev,JSON.stringify({name:myName,profile:profile,teams:myTeams,roster:localRoster,consent:consent,sessions:store.sessions,savedAt:Date.now()}));}catch(e){}}
+      clearLocalUserData();updateTeamBar();renderStats();renderAll();updateAuthBar();
+    }else if(!prev&&hasLocalData){
+      /* OWNER_KEY が無いのに端末内データがある：前のユーザー不明として消す */
+      clearLocalUserData();updateTeamBar();renderStats();renderAll();updateAuthBar();
+    }
+    try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
+    /* 認証が確定したのでバーを表示してよい（チームバーもここで描き直す） */
+    authReady=true;updateTeamBar();
+  }finally{authSwitching=false;}
 }
 /* ---- チーム（単体HTMLでも使えるローカル登録） ----
    共有DB（claude db）が使える環境では既存のDB版を使い、
@@ -786,23 +832,74 @@ function addRosterMember(name){
 }
 function updateTeamBar(){
   const el=document.getElementById('teamBar');if(!el)return;
+  if(!authReady){el.textContent='';return;}
   const t=teamNow();
   if(t==='all'){el.textContent=myTeams.length?'チーム：すべて表示中（'+myTeams.length+'チームに参加）':'チーム未登録 — ランキングでチームを作れます';return;}
+  if(!teamInfo[t])ensureTeamInfo();
   const ti=teamInfo[t]||{};
   el.textContent='🏷 '+(ti.name||'チーム')+'　招待コード：'+(ti.code||'—');
 }
 /* 動画以外のデータはすべて Firestore に保存する（端末内は読み込み用の控え）。
    共有モードは「すべて共有」「試合のみ」の2択。「共有しない」はない。 */
-let shareMode='all',shareTimer=null,lastShared=null,sharing=false,rtok=0;
+let shareMode='all',shareTimer=null,lastShared=null,sharing=false,rtok=0,shareRetries=0;
 try{shareMode=localStorage.getItem('kyudo_share')||'all';if(shareMode!=='all')shareMode='all';}catch(e){}
 
-function compactSessions(){
+/* 共有先で見たセッションID（削除の伝播判定用）と、この端末で削除したセッションID。
+   seen は「共有先にあったID」、deleted は「この端末で削除したID」。
+   ユーザー切替時は両方クリアする（clearLocalUserData で行う）。 */
+const SEEN_KEY='kyudo_seen_sessions_v1',DELETED_KEY='kyudo_deleted_sessions_v1';
+let seenRemoteIds=new Set(),deletedSessionIds=new Set();
+try{seenRemoteIds=new Set(JSON.parse(localStorage.getItem(SEEN_KEY)||'[]'));}catch(e){}
+try{deletedSessionIds=new Set(JSON.parse(localStorage.getItem(DELETED_KEY)||'[]'));}catch(e){}
+function saveSeenIds(){try{localStorage.setItem(SEEN_KEY,JSON.stringify([...seenRemoteIds].slice(-500)));}catch(e){}}
+function saveDeletedIds(){try{localStorage.setItem(DELETED_KEY,JSON.stringify([...deletedSessionIds].slice(-200)));}catch(e){}}
+function markSessionDeleted(id){if(!id)return;deletedSessionIds.add(id);saveDeletedIds();}
+/* 共有で落ちた射のメタデータを、セッション内の順序から再計算する */
+function rebuildShotMeta(shots){
+  return (shots||[]).map((a,i)=>({nx:a.nx,ny:a.ny,hit:!!a.hit,dist:Number(Math.hypot(a.nx||0,a.ny||0).toFixed(3)),stand:Math.floor(i/4)+1,arrowNum:(i%4)+1,arrowType:(i%2===0?'甲矢':'乙矢')}));
+}
+/* 共有先のセッションを端末内に統合する（IDで和集合。同IDはローカル優先。
+   日付のないセッションは取り込まない。この端末で削除したものは復活させない）。 */
+function mergeRemoteIntoLocal(remoteSessions){
+  if(!Array.isArray(remoteSessions))return false;
+  const byId=new Map(store.sessions.map(s=>[s.id,s]));
+  let changed=false;
+  remoteSessions.forEach(x=>{
+    if(!x||!x.id)return;
+    seenRemoteIds.add(x.id);
+    if(!x.d)return;
+    if(deletedSessionIds.has(x.id))return;
+    if(byId.has(x.id))return;
+    byId.set(x.id,{id:x.id,date:x.d,type:x.t||'practice',title:x.ti||'',shots:rebuildShotMeta((x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]})))});
+    changed=true;
+  });
+  saveSeenIds();
+  if(!store.sessions.length)store.sessions.push(newSess());
+  if(changed){store.sessions=[...byId.values()];store.currentId=curSession().id;shots=curSession().shots;persistStore();}
+  return changed;
+}
+/* 共有先で見たことがあるのに今の共有先に無いローカルセッションを削除する
+   （他端末での削除をこの端末にも伝える。共有したことのない記録は消さない）。 */
+function pruneLocalDeletedByRemote(remoteSessions){
+  if(!Array.isArray(remoteSessions))return false;
+  const remoteIds=new Set(remoteSessions.map(x=>x&&x.id).filter(Boolean));
+  let changed=false;
+  store.sessions=store.sessions.filter(s=>{
+    if(seenRemoteIds.has(s.id)&&!remoteIds.has(s.id)){changed=true;return false;}
+    return true;
+  });
+  if(!store.sessions.length)store.sessions.push(newSess());
+  if(changed){store.currentId=curSession().id;shots=curSession().shots;persistStore();}
+  return changed;
+}
+function compactSessions(maxBytes){
   const r=x=>Math.round(x*100)/100;
+  const cap=(typeof maxBytes==='number')?maxBytes:900000;
   const ss=store.sessions.filter(x=>x.shots.length&&(shareMode==='all'||x.type==='match'))
     .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id))
     .map(x=>({id:x.id,d:x.date,t:x.type,ti:(x.title||'').slice(0,40),s:x.shots.map(h=>[r(h.nx),r(h.ny),h.hit?1:0])}));
   let trimmed=false;
-  while(ss.length>1&&JSON.stringify(ss).length>230000){ss.shift();trimmed=true;}
+  while(ss.length>1&&JSON.stringify(ss).length>cap){ss.shift();trimmed=true;}
   return {ss,trimmed};
 }
 function scheduleShare(){if(!dbCap||!myId)return;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,1500);}
@@ -815,15 +912,28 @@ async function doShare(){
   sharing=true;
   try{
     const ref=dbCap.doc('members/'+myId),r=members[myId];
+    /* 削除済みのドキュメント（墓標）には書き込まない */
+    if(r&&r.deleted){sharing=false;return;}
+    /* 書く直前に共有先の最新セッションと統合する（他端末の記録を消さないため） */
+    const remoteSessions=(r&&Array.isArray(r.sessions))?r.sessions:[];
+    mergeRemoteIntoLocal(remoteSessions);
+    pruneLocalDeletedByRemote(remoteSessions);
     const {ss,trimmed}=compactSessions();
     shareStatus=ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません';
-    const keep=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
-    const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(consent||null)+'|'+JSON.stringify(keep);
+    /* 共有先の同意がローカルより新しい場合は、古いローカル同意で書き戻さない */
+    const wConsent=(consent&&r&&r.consent&&(r.consent.at||0)>(consent.at||0))?r.consent:consent;
+    /* この端末で削除したセッションは、共有先の記録にも残さない */
+    const keepRaw=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
+    const keep=keepRaw.filter(x=>x&&!deletedSessionIds.has(x.id));
+    const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(wConsent||null)+'|'+JSON.stringify(keep);
     if(lastShared===null&&r&&((r.mode||'all')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.roster||{})+'|'+JSON.stringify(r.consent||null)+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
     /* merge:true で書く：プロフィールや設定済みの印を消さないため */
-    if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:consent||null,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
+    if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:wConsent||null,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
+    shareRetries=0;
   }catch(e){
     shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
+    /* 書き込み失敗時は指数バックオフで再送する（最大3回） */
+    if(shareRetries<3){const d=[5000,15000,45000][shareRetries];shareRetries++;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,d);}
   }
   sharing=false;
   rerender();
@@ -835,6 +945,11 @@ function setShare(m){
   try{localStorage.setItem('kyudo_share',m);}catch(e){}
   lastShared=null;shareStatus='';scheduleShare();renderStats();
 }
+/* 回線復帰時は保留中の共有を送り直す。タブを閉じる・隠すときは保留中の共有を送る
+   （完了は保証されないが、1.5秒待たずに送れる場合がある）。 */
+window.addEventListener('online',()=>{scheduleShare();});
+window.addEventListener('pagehide',()=>{if(dbCap&&myId&&membersFirst){try{doShare();}catch(e){}}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&dbCap&&myId&&membersFirst){try{doShare();}catch(e){}}});
 function rerender(){if(document.body.dataset.pg!=='rec')renderStats();}
 
 /* ---- Firebase Firestore ----
@@ -911,6 +1026,7 @@ function googleProvider(){const p=new firebase.auth.GoogleAuthProvider();p.setCu
 function authUser(){try{return firebase.auth().currentUser;}catch(e){return null;}}
 function updateAuthBar(){
   const el=document.getElementById('authBar');if(!el)return;
+  if(!authReady){el.innerHTML='';updateLoginGate();return;}
   if(!dbCap){el.innerHTML='';updateLoginGate();return;}
   const u=authUser();
   if(u&&!u.isAnonymous){
@@ -955,7 +1071,11 @@ async function loginWithGoogle(){
   }
 }
 async function logoutGoogle(){
-  try{await firebase.auth().signOut();location.reload();}
+  try{
+    /* ログアウト前に未共有の記録を送る（ベストエフォート、1.5秒で諦める） */
+    try{await Promise.race([doShare(),new Promise(r=>setTimeout(r,1500))]);}catch(e){}
+    await firebase.auth().signOut();location.reload();
+  }
   catch(e){authMsg='ログアウトできませんでした：'+((e&&e.message)||e);updateAuthBar();}
 }
 function authBarClick(e){const b=e.target.closest('button[data-auth-act]');if(!b)return;if(b.dataset.authAct==='google')loginWithGoogle();else if(b.dataset.authAct==='logout'){if(confirm('ログアウトしますか？'))logoutGoogle();}}
@@ -963,30 +1083,41 @@ function authBarClick(e){const b=e.target.closest('button[data-auth-act]');if(!b
    プロフィール・同意・名簿・チーム・記録を読み込み、端末内の記録と統合する
    （IDで重複を除く）。別の端末でつけた記録がここで読み込まれる。 */
 function adoptMembersDoc(){
-  const m=members[myId];if(!m)return;
+  const m=members[myId];
+  /* 墓標（削除済み）のドキュメントは無視する */
+  if(!m||m.deleted)return;
   /* 共有は常にON（すべて共有）。Firestore 側が「試合のみ」でも「すべて共有」に移行する。 */
   shareMode='all';
-  if(m.profile)profile=Object.assign({},m.profile);
+  /* プロフィールは項目ごとに統合：ローカルにだけあるアイコンは残す */
+  if(m.profile){
+    const oldIcon=profile.icon;
+    profile=Object.assign({},m.profile);
+    if(!profile.icon&&oldIcon)profile.icon=oldIcon;
+  }
   /* Firestore の名前を正とする（別端末で変えた名前もここで反映される） */
   if(m.name)myName=m.name;
-  if(m.consent)consent=m.consent;
-  if(Array.isArray(m.roster))localRoster=Object.assign({},m.roster,localRoster);
+  /* 同意は共有先のほうが新しい場合だけ取り込む */
+  if(m.consent&&(!consent||(m.consent.at||0)>(consent.at||0)))consent=m.consent;
+  if(m.onboarded)obDone=true;
+  /* 名簿：共有先にあるチームの名簿で置き換え、ローカル専用チームの名簿は残す */
+  if(m.roster&&typeof m.roster==='object'&&!Array.isArray(m.roster)){
+    const next={};
+    Object.keys(localRoster).forEach(t=>{if(String(t).indexOf('lt')===0)next[t]=localRoster[t];});
+    Object.keys(m.roster).forEach(t=>{next[t]=m.roster[t];});
+    localRoster=next;
+  }
   if(Array.isArray(m.sessions)){
-    const byId=new Map(store.sessions.map(s=>[s.id,s]));
-    m.sessions.forEach(x=>{
-      if(!x||!x.id||byId.has(x.id))return;
-      byId.set(x.id,{id:x.id,date:x.d||todayStr(),type:x.t||'practice',title:x.ti||'',shots:(x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]}))});
-    });
-    store.sessions=[...byId.values()];
-    store.currentId=curSession().id;shots=curSession().shots;
-    persistStore();
+    mergeRemoteIntoLocal(m.sessions);
+    pruneLocalDeletedByRemote(m.sessions);
   }
   if(Array.isArray(m.teams)){
-    /* Firestore側の参加チームと、この端末のローカルチームを両方残す */
-    myTeams=Array.from(new Set([].concat(myTeams,m.teams)));
+    /* チームは共有先を正とし、ローカル専用チーム（lt始まり）だけ残す */
+    const localOnly=myTeams.filter(id=>String(id).indexOf('lt')===0);
+    myTeams=Array.from(new Set([].concat(m.teams,localOnly)));
+    if(st.team&&st.team!=='all'&&!myTeams.includes(st.team))st.team='all';
   }
   saveLocalTeams();
-  updateAuthBar();
+  updateAuthBar();updateTeamBar();loadTeams();
 }
 function startMembersSync(){
   let first=true;
@@ -994,20 +1125,19 @@ function startMembersSync(){
   dbCap.collection('members').onSnapshot(snap=>{
     clearTimeout(timer);memStatus='';members={};
     snap.docs.forEach(d=>{members[d.id]=d.data();});
-    if(first){
-      first=false;membersFirst=true;
-      adoptMembersDoc();
-      scheduleShare();
-      checkOnboarding();
-    }
+    if(first){first=false;membersFirst=true;}
+    /* 初回だけでなく毎回、共有先の最新データを取り込む（他端末の記録・名前・チームも反映される） */
+    adoptMembersDoc();
+    scheduleShare();
+    checkOnboarding();
     rerender();
   },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
 }
 async function initFirebase(){
   try{
-    if(typeof firebase==='undefined')return false;
+    if(typeof firebase==='undefined'){authReady=true;updateTeamBar();updateAuthBar();return false;}
     const cfg=loadFirebaseConfig();
-    if(!cfg)return false;
+    if(!cfg){authReady=true;updateTeamBar();updateAuthBar();return false;}
     if(!firebase.apps.length)firebase.initializeApp(cfg);
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
@@ -1043,7 +1173,7 @@ async function initFirebase(){
     return true;
   }catch(e){
     firebaseStatus='Firebaseに接続できませんでした：'+((e&&e.message)||e)+'（configを確認してください）';
-    updateAuthBar();
+    authReady=true;updateTeamBar();updateAuthBar();
     return false;
   }
 }
@@ -1057,17 +1187,17 @@ async function initFirebase(){
     const id=await user.id();
     if(!id)return;
     dbCap=db;userCap=user;myId=id;
+    await noteAuthUser({uid:id});
     let first=true;
     const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
     db.collection('members').onSnapshot(snap=>{
       clearTimeout(timer);memStatus='';members={};
       snap.docs.forEach(d=>{members[d.id]=d.data();});
-      if(first){
-        first=false;membersFirst=true;
-        adoptMembersDoc();
-        scheduleShare();
-        checkOnboarding();
-      }
+      if(first){first=false;membersFirst=true;}
+      /* 初回だけでなく毎回、共有先の最新データを取り込む */
+      adoptMembersDoc();
+      scheduleShare();
+      checkOnboarding();
       rerender();
     },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
   }catch(e){}
@@ -1086,7 +1216,7 @@ function teamMemberIds(tid){
   Object.keys(members).forEach(id=>{
     if(id===myId)return;
     const m=members[id];
-    if(!m||!Array.isArray(m.sessions))return;
+    if(!m||m.deleted)return;
     if(tid!=='all'&&!(Array.isArray(m.teams)&&m.teams.includes(tid)))return;
     ids.push(id);
   });
@@ -1134,7 +1264,8 @@ async function handleIconFile(file,ctx){
 function rankRowHtml(r,i,nm){
   const medals=['🥇','🥈','🥉'];
   if(!r.b){
-    const all=allSessionsOf(r.id);
+    /* 「共有中の記録」は射が1本以上あるセッションだけ数える（空セッションは数えない） */
+    const all=allSessionsOf(r.id).filter(s=>s.shots&&s.shots.length>0);
     const shots=all.reduce((a,s)=>a+s.shots.length,0);
     return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>—</div><div class='rank-main'>${iconImg(r.id,28)} ${esc(nm[r.id])}<div class='vtag'>この期間の記録なし　共有中の記録：${all.length}件（${shots}本）</div></div><div class='rank-val'>—<div class='vtag'>記録を見る ›</div></div></div>`;
   }
@@ -1146,6 +1277,16 @@ async function loadTeams(){
   for(const id of myTeams){
     if(!teamInfo[id]){try{const d=await dbCap.doc('teams/'+id).get();if(d.exists)teamInfo[id]=d.data();}catch(e){}}
   }
+}
+/* teamInfo に無いチームは読み込んでから描画し直す（チーム名・招待コードの空表示を防ぐ）。
+   存在しないチームの再読込を繰り返さないよう、試したIDは覚えておく。 */
+let teamInfoTried=new Set();
+function ensureTeamInfo(){
+  if(!dbCap)return;
+  const missing=myTeams.filter(id=>!teamInfo[id]&&!teamInfoTried.has(id));
+  if(!missing.length)return;
+  missing.forEach(id=>teamInfoTried.add(id));
+  loadTeams().then(()=>{updateTeamBar();renderStats();}).catch(()=>{});
 }
 function genCode(){
   const c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',a=new Uint32Array(6);
@@ -1168,6 +1309,7 @@ async function createTeam(){
     await ref.set({name,code,owner:myId,created:Date.now()});
     teamInfo[ref.id]={name,code,owner:myId};
     myTeams.push(ref.id);st.team=ref.id;
+    saveLocalTeams();
     teamMsg='「'+name+'」を作成しました。招待コード：'+code;
     scheduleShare();
   }catch(e){teamMsg='チームを作成できませんでした（このページの編集権限をご確認ください）';}
@@ -1184,7 +1326,7 @@ async function joinTeam(){
     else{
       const d=q.docs[0];
       if(myTeams.includes(d.id))teamMsg='すでに参加しています';
-      else{myTeams.push(d.id);teamInfo[d.id]=d.data();st.team=d.id;teamMsg='「'+(d.data().name||'チーム')+'」に参加しました';scheduleShare();}
+      else{myTeams.push(d.id);teamInfo[d.id]=d.data();st.team=d.id;saveLocalTeams();teamMsg='「'+(d.data().name||'チーム')+'」に参加しました';scheduleShare();}
     }
   }catch(e){teamMsg='参加できませんでした。時間をおいて再度お試しください';}
   renderStats();
@@ -1194,6 +1336,7 @@ function leaveTeam(id){
   if(!dbCap){leaveLocalTeam(id);return;}
   myTeams=myTeams.filter(x=>x!==id);
   if(st.team===id)st.team='';
+  saveLocalTeams();
   teamMsg='';scheduleShare();renderStats();
 }
 /* チームの仲間の名前一覧（Firestoreの members から）。
@@ -1250,12 +1393,21 @@ function teamCard(){
   <p class='hint-text' style='text-align:left'>チームはランキングで比較するグループです。招待コードを部員・仲間に伝えると、同じチームで比較できます。アクセス制限ではないので、このページを開けるメンバーは、共有された記録を見られます。</p></div>`;
 }
 async function names(ids){
-  let ps={};
-  try{if(userCap)ps=await userCap.profiles(ids.filter(i=>i!=='me'));}catch(e){}
-  const out={};let n=0;
+  /* 名前はスナップショット（members[uid].name）を正とする。
+     無い場合だけ userCap.profiles で取得し、それでも無ければ uid 由来の安定した識別子にする。
+     連番の「メンバー1」「メンバー2」は使わない（並び順で別人を指すため）。 */
+  const out={};
   ids.forEach(id=>{
     if(id===myId||id==='me'){out[id]=myName||'あなた';return;}
-    out[id]=(ps[id]&&ps[id].name)||('メンバー'+(++n));
+    const m=members[id];
+    out[id]=(m&&m.name)||'';
+  });
+  const need=ids.filter(id=>id!==myId&&id!=='me'&&!out[id]);
+  let ps={};
+  try{if(userCap&&need.length)ps=await userCap.profiles(need);}catch(e){}
+  ids.forEach(id=>{
+    if(out[id])return;
+    out[id]=(ps[id]&&ps[id].name)||('メンバー'+String(id).slice(0,4));
   });
   return out;
 }
@@ -1280,10 +1432,10 @@ function chartSvg(series,per){
   keys.forEach((k,i)=>{if(keys.length<=8||i%2===0)svg+=`<text class='tx' x='${xs(i)}' y='${H-8}' text-anchor='middle'>${shortLabel(k,per)}</text>`;});
   return svg+'</svg>';
 }
-function dayBody(all){
+function dayBody(all,sess){
   const days=all.map(b=>b.key).reverse();
   const day=days.includes(st.day)?st.day:days[0];
-  const ss=store.sessions.filter(x=>x.date===day&&(st.type==='all'||x.type===st.type)).sort((a,b)=>a.id.localeCompare(b.id));
+  const ss=(sess||store.sessions).filter(x=>x.date===day&&(st.ttype==='all'||x.type===st.ttype)).sort((a,b)=>a.id.localeCompare(b.id));
   const stands=[];
   ss.forEach(x=>{for(let i=0;i<x.shots.length;i+=4){const g=x.shots.slice(i,i+4);stands.push({h:g.filter(y=>y.hit).length,n:g.length});}});
   const W=320,H=160,L=28,R=10,T=18,B=28,pw=W-L-R,ph=H-T-B,m=Math.max(stands.length,1),cw=pw/m;
@@ -1308,11 +1460,17 @@ function dayBody(all){
   <div class='legend'><span style='color:var(--chkb)'>■</span> 立ごとの的中　<span style='color:#d98e04'>●</span> 累積的中率（%）</div><h2 style='margin:12px 0 6px'>📅 日ごとの推移</h2>`;
 }
 function trendBody(){
-  const per=st.per,all=buckets(per,st.type);
+  /* 推移はランキングと期間・種別を共有しない（st.tper/st.ttype）。
+     表示する人は st.tmember（未選択＝自分）。 */
+  const per=st.tper,type=st.ttype;
+  const ids=teamMemberIds('all');
+  const uid=(st.tmember&&ids.includes(st.tmember))?st.tmember:(myId||'me');
+  const sess=allSessionsOf(uid);
+  const all=bucketsOf(sess,per,type);
   if(!all.length)return `<p class='hint-text'>該当する記録がありません</p>`;
   const tot=all.reduce((a,b)=>({n:a.n+b.n,h:a.h+b.h,kai:a.kai+b.kai}),{n:0,h:0,kai:0});
   const rows=all.slice().reverse().map(b=>`<tr><td>${bucketLabel(b.key,per)}</td><td>${b.h}/${b.n}</td><td>${pct(b)}%</td><td>${b.kai}</td></tr>`).join('');
-  return (per==='day'?dayBody(all):'')+`<div class='diag-summary'>合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg([{b:all,cls:''}],per)}<p class='hint-text'>的中率（%）・直近${Math.min(12,all.length)}期間</p><div class='history-list'><table class='tbl'><tr><th>期間</th><th>的中</th><th>的中率</th><th>皆中</th></tr>${rows}</table></div>`;
+  return (per==='day'?dayBody(all,sess):'')+`<div class='diag-summary'>合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg([{b:all,cls:''}],per)}<p class='hint-text'>的中率（%）・直近${Math.min(12,all.length)}期間</p><div class='history-list'><table class='tbl'><tr><th>期間</th><th>的中</th><th>的中率</th><th>皆中</th></tr>${rows}</table></div>`;
 }
 
 /* ---- ランキング（メンバー比較） ---- */
@@ -1326,7 +1484,13 @@ async function rankBody(){
   const rosterList=rosterIds.flatMap(tid=>(localRoster[tid]||[]).map(m=>({tid:tid,m:m})));
   const rosterRows=rosterList.map(x=>`<div class='rank-row'><div class='rank-no'>—</div><div class='rank-main'>${esc(x.m.name)}<div class='vtag'>${esc((teamInfo[x.tid]&&teamInfo[x.tid].name)||'チーム')}　記録なし</div></div><div class='rank-val'>—<div class='vtag'>名簿のみ</div></div></div>`).join('');
   const rosterBlock=rosterRows?`<h2 style='margin:14px 0 4px'>👥 チーム名簿（記録なし）</h2>`+rosterRows:'';
-  if(!keys.length)return teamSel+sortTabs+`<p class='hint-text'>該当する記録がありません。メニュー →「チーム」でチームを作り、名簿に部員を追加できます。</p>`+rosterBlock;
+  /* 空の理由でメッセージを分ける。期間・種別で絞って0件の場合は、
+     期間・種別のタブ（renderRankPage の head 側）は残っているので、切り替えて確認できる。 */
+  if(!keys.length){
+    const anySess=ids.some(id=>allSessionsOf(id).some(s=>s.shots&&s.shots.length));
+    if(anySess)return teamSel+sortTabs+`<p class='hint-text'>この期間・種別には記録がありません。上の期間や種別を変えてみてください。</p>`+rosterBlock;
+    return teamSel+sortTabs+`<p class='hint-text'>該当する記録がありません。メニュー →「チーム」でチームを作り、名簿に部員を追加できます。</p>`+rosterBlock;
+  }
   const sel=keys.includes(st.sel)?st.sel:keys[0];
   const nm=await names(teamMemberIds('all'));
   const rows=rankRowsFor(ids,per,sel);
@@ -1339,16 +1503,16 @@ async function rankBody(){
     const trows=rankRowsFor(teamMemberIds(tid),per,sel);
     return `<h2 style='margin:14px 0 4px'>🏷 ${esc(tn)}</h2>`+(trows.length?trows.map((r,i)=>rankRowHtml(r,i,nm)).join(''):`<p class='hint-text'>この期間の記録がありません</p>`);
   }).join('');
-  /* 団体ランキング（チーム同士を平均的中率で比較） */
+  /* 団体ランキング（チーム同士を平均的中率で比較）。記録ゼロのチームも0本・—%で表示する。 */
   const medals=['🥇','🥈','🥉'];
   const trank=myTeams.map(tid=>{
     let n=0,h=0,kai=0;
     teamMemberIds(tid).forEach(id=>{const b=bucketsOf(allSessionsOf(id),per,st.type).find(x=>x.key===sel);if(b){n+=b.n;h+=b.h;kai+=b.kai;}});
     return {tid,n,h,kai};
-  }).filter(x=>x.n>0).sort((a,b)=>(b.h/b.n)-(a.h/a.n)||b.h-a.h);
+  }).sort((a,b)=>{const ra=a.n?a.h/a.n:-1,rb=b.n?b.h/b.n:-1;return rb-ra||b.h-a.h;});
   const teamRankBlock=trank.length?trank.map((x,i)=>{
     const tn=(teamInfo[x.tid]&&teamInfo[x.tid].name)||'チーム';
-    return `<div class='rank-row'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(tn)}<div class='bar-track'><div class='bar-fill' style='width:${Math.round(x.h/x.n*100)}%'></div></div><div class='vtag'>${x.h}/${x.n}本　皆中 ${x.kai}回</div></div><div class='rank-val'>${Math.round(x.h/x.n*100)}%</div></div>`;
+    return `<div class='rank-row'><div class='rank-no'>${x.n?(medals[i]||(i+1)+'位'):(i+1)+'位'}</div><div class='rank-main'>${esc(tn)}<div class='bar-track'><div class='bar-fill' style='width:${x.n?Math.round(x.h/x.n*100):0}%'></div></div><div class='vtag'>${x.h}/${x.n}本　皆中 ${x.kai}回</div></div><div class='rank-val'>${x.n?Math.round(x.h/x.n*100)+'%':'—%'}</div></div>`;
   }).join(''):'';
   const bestRows=bucketsOf(store.sessions,per,st.type).filter(b=>b.n>=4).sort((a,b)=>b.h/b.n-a.h/a.n||b.h-a.h).slice(0,5)
     .map((b,i)=>`<div class='rank-row'><div class='rank-no'>${i+1}位</div><div class='rank-main'>${bucketLabel(b.key,per)}</div><div class='rank-val'>${pct(b)}%<div class='vtag'>${b.h}/${b.n}</div></div></div>`).join('');
@@ -1361,10 +1525,15 @@ async function rankBody(){
 async function memberBody(uid){
   const per=st.per,isMe=(uid===myId||uid==='me');
   const nm=await names([uid,myId||'me']);
-  const theirS=allSessionsOf(uid),theirs=bucketsOf(theirS,per,st.type),mine=bucketsOf(store.sessions,per,st.type);
+  /* ランキングで選んだ期間（st.sel）があるときは、その期間の記録だけを一覧・合計の対象にする */
+  const selKey=st.sel||null;
+  const inSel=x=>!selKey||bucketKey(x.date,per)===selKey;
+  const theirS=allSessionsOf(uid).filter(x=>(st.type==='all'||x.type===st.type)&&inSel(x));
+  const theirs=bucketsOf(theirS,per,st.type),mine=bucketsOf(store.sessions.filter(x=>(st.type==='all'||x.type===st.type)&&inSel(x)),per,st.type);
   const name=esc(nm[uid]||'メンバー');
-  const sess=theirS.filter(x=>st.type==='all'||x.type===st.type).sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  const sess=theirS.sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
   const tot=theirs.reduce((a,b)=>({n:a.n+b.n,h:a.h+b.h,kai:a.kai+b.kai}),{n:0,h:0,kai:0});
+  const sumLabel=selKey?bucketLabel(selKey,per)+'の記録':(per==='year'?'年':per==='month'?'月':per==='week'?'週':'日')+'別の推移';
   const series=isMe?[{b:theirs,cls:''}]:[{b:mine,cls:'2'},{b:theirs,cls:''}];
   const rows=sess.map(x=>{
     const sr=rate(x.shots),stands=[];
@@ -1373,7 +1542,7 @@ async function memberBody(uid){
   }).join('');
   const legend=isMe?'':`<div class='legend'><span style='color:#d98e04'>●</span> あなた　<span style='color:var(--head)'>●</span> ${name}</div>`;
   return `<button data-k='member' data-v=''>‹ ランキングに戻る</button><h2 style='margin:10px 0 6px'>${iconImg(uid,30)} ${name} の記録</h2>`
-    +(tot.n?`<div class='diag-summary'>${per==='year'?'年':per==='month'?'月':per==='week'?'週':'日'}別の推移　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg(series,per)}${legend}`:'')
+    +(tot.n?`<div class='diag-summary'>${sumLabel}　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg(series,per)}${legend}`:'')
     +`<div class='history-list'>${rows||'<div style="color:var(--muted);">該当する記録がありません</div>'}</div>`;
 }
 /* 管理者だけが開ける設定：URL に ?admin=1 または #admin を付けたときだけ
@@ -1384,6 +1553,7 @@ function isAdmin(){try{return new URLSearchParams(location.search).get('admin')=
 let profileMsg='';
 function renderProfilePage(){
   const el=document.getElementById('profilePage');if(!el)return;
+  ensureTeamInfo();
   const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
   const keep={pfName:val('pfName'),pfOrg:val('pfOrg'),pfGrade:val('pfGrade'),pfYears:val('pfYears'),pfBio:val('pfBio')};
   const p=profile||{};
@@ -1422,7 +1592,10 @@ async function saveProfile(){
   if(oldIcon)profile.icon=oldIcon;
   saveLocalTeams();
   if(dbCap&&myId){
-    try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,updated:Date.now()},{merge:true});}catch(e){}
+    try{
+      await dbCap.doc('members/'+myId).set({profile:profile,name:myName,updated:Date.now()},{merge:true});
+      if(members[myId]){members[myId].name=myName;members[myId].profile=Object.assign({},profile);}
+    }catch(e){}
     scheduleShare();
   }
   profileMsg='保存しました';updateAuthBar();renderProfilePage();
@@ -1452,6 +1625,9 @@ function renderOnboard(){
   const u=authUser();
   const v=obProfileValues();
   const defName=myName||(u&&u.displayName)||'';
+  /* step1 の初期値：入力済みの値が無ければ、採用済みのプロフィールを使う
+     （既存の所属・段位などが空で上書きされないようにする） */
+  const pv=k=>(k in v)?v[k]:(profile[k]||'');
   let body='';
   if(obStep===0){
     body=`<h2>🔐 はじめる前に確認してください</h2>
@@ -1470,12 +1646,12 @@ function renderOnboard(){
   }else if(obStep===1){
     body=`<h2>👤 プロフィールを設定</h2>
     <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからメニュー →「プロフィール」で変えられます。</p>
-    <div class='profile-field'><label>アイコン</label><div style='display:flex;align-items:center;gap:10px'>${v.icon?`<img class='avatar-icon lg' src='${v.icon}' alt=''>`:'<span style="font-size:48px;line-height:1">👤</span>'}<button type='button' onclick="document.getElementById('obIconFile').click()">画像を選ぶ</button></div><input type='file' id='obIconFile' accept='image/*'></div>
+    <div class='profile-field'><label>アイコン</label><div style='display:flex;align-items:center;gap:10px'>${(v.icon||profile.icon)?`<img class='avatar-icon lg' src='${v.icon||profile.icon}' alt=''>`:'<span style="font-size:48px;line-height:1">👤</span>'}<button type='button' onclick="document.getElementById('obIconFile').click()">画像を選ぶ</button></div><input type='file' id='obIconFile' accept='image/*'></div>
     <div class='profile-field'><label>表示名（必須）</label><input type='text' id='obName' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(v.name||defName)}'/></div>
-    <div class='profile-field'><label>所属</label><input type='text' id='obOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(v.org||'')}'/></div>
-    <div class='profile-field'><label>段位・級位</label><select id='obGrade'>${gradeOptions(v.grade||'')}</select></div>
-    <div class='profile-field'><label>弓歴</label><input type='text' id='obYears' placeholder='例：3年目' maxlength='20' value='${esc(v.years||'')}'/></div>
-    <div class='profile-field'><label>ひとこと</label><textarea id='obBio' rows='3' placeholder='自己紹介など' maxlength='200'>${esc(v.bio||'')}</textarea></div>
+    <div class='profile-field'><label>所属</label><input type='text' id='obOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(pv('org'))}'/></div>
+    <div class='profile-field'><label>段位・級位</label><select id='obGrade'>${gradeOptions(pv('grade'))}</select></div>
+    <div class='profile-field'><label>弓歴</label><input type='text' id='obYears' placeholder='例：3年目' maxlength='20' value='${esc(pv('years'))}'/></div>
+    <div class='profile-field'><label>ひとこと</label><textarea id='obBio' rows='3' placeholder='自己紹介など' maxlength='200'>${esc(pv('bio'))}</textarea></div>
     <div class='sess-row'><button class='pri' data-ob='next'>次へ</button><button data-ob='skip'>あとで設定する</button></div>`;
   }else if(obStep===2){
     if(myTeams.length)obChoice='solo';
@@ -1506,6 +1682,8 @@ async function obJoinTeam(code){
     if(q.empty)return false;
     const d=q.docs[0];
     if(!myTeams.includes(d.id)){myTeams.push(d.id);teamInfo[d.id]=d.data();st.team=d.id;}
+    saveLocalTeams();
+    if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({teams:myTeams,updated:Date.now()},{merge:true});}catch(e){}}
     scheduleShare();return true;
   }catch(e){return false;}
 }
@@ -1518,6 +1696,8 @@ async function obCreateTeam(name){
     const ref=dbCap.collection('teams').doc();
     await ref.set({name,code,owner:myId,created:Date.now()});
     teamInfo[ref.id]={name,code,owner:myId};myTeams.push(ref.id);st.team=ref.id;
+    saveLocalTeams();
+    if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({teams:myTeams,updated:Date.now()},{merge:true});}catch(e){}}
     scheduleShare();return true;
   }catch(e){return false;}
 }
@@ -1545,7 +1725,9 @@ async function withdrawConsent(){
 async function deleteMyData(){
   if(!confirm('自分のデータを削除しますか？\n記録・プロフィール・チームへの参加が Firebase から削除され、この端末の記録も消えます。自分が作ったチームは残ります。'))return;
   if(!confirm('本当に削除しますか？この操作は取り消せません。'))return;
-  try{if(dbCap&&myId)await dbCap.doc('members/'+myId).delete();}catch(e){}
+  /* ドキュメントは削除せず墓標を残す（別端末の共有で削除が復活しないようにするため） */
+  try{if(dbCap&&myId)await dbCap.doc('members/'+myId).set({v:2,deleted:true,deletedAt:Date.now(),sessions:[],teams:[],name:'',profile:{},roster:{},consent:null,updated:Date.now()},{merge:true});}catch(e){}
+  try{localStorage.removeItem(OWNER_KEY);}catch(e){}
   clearLocalUserData();
   try{await firebase.auth().signOut();}catch(e){}
   location.reload();
@@ -1569,22 +1751,29 @@ async function finishOnboarding(){
   if(v.icon)profile.icon=v.icon;else if(oldIcon)profile.icon=oldIcon;
   saveLocalTeams();
   if(dbCap&&myId){
-    try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,onboarded:true,updated:Date.now()},{merge:true});}catch(e){}
+    try{
+      await dbCap.doc('members/'+myId).set({profile:profile,name:myName,teams:myTeams,onboarded:true,updated:Date.now()},{merge:true});
+      if(members[myId])members[myId].onboarded=true;
+    }catch(e){}
   }
   obDone=true;obMsg='';
   const g=document.getElementById('onboardOverlay');if(g){g.style.display='none';g.innerHTML='';}
   updateAuthBar();updateTeamBar();setPage('rec');
 }
 async function skipOnboarding(){
-  /* 入力済みのプロフィールだけ残し、設定済みの印をつけて閉じる */
+  /* プロフィールは書き換えない（既存の所属・段位などが消えないようにする）。
+     表示名だけ入力されていたら名前として残す。 */
   const v=obProfileValues();
-  if(v.name)myName=v.name.slice(0,20);
-  const oldIcon2=profile.icon;
-  profile={org:v.org.slice(0,30),grade:v.grade,years:v.years.slice(0,20),bio:v.bio.slice(0,200)};
-  if(v.icon)profile.icon=v.icon;else if(oldIcon2)profile.icon=oldIcon2;
+  const enteredName=(v.name||'').trim().slice(0,20);
+  if(enteredName)myName=enteredName;
   saveLocalTeams();
   if(dbCap&&myId){
-    try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,onboarded:true,updated:Date.now()},{merge:true});}catch(e){}
+    try{
+      const payload={onboarded:true,updated:Date.now()};
+      if(enteredName)payload.name=myName;
+      await dbCap.doc('members/'+myId).set(payload,{merge:true});
+      if(members[myId])members[myId].onboarded=true;
+    }catch(e){}
   }
   obDone=true;obMsg='';
   const g=document.getElementById('onboardOverlay');if(g){g.style.display='none';g.innerHTML='';}
@@ -1611,6 +1800,7 @@ function renderStats(){
 }
 function renderTeamPage(){
   const el=document.getElementById('teamPage');if(!el)return;
+  ensureTeamInfo();
   const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
   const act=document.activeElement&&document.activeElement.id;
   const keep={teamName:val('teamName'),teamCode:val('teamCode'),memberName:val('memberName'),myNameInput:val('myNameInput'),fbConfigInput:val('fbConfigInput')};
@@ -1619,7 +1809,14 @@ function renderTeamPage(){
   if(act==='teamName'||act==='teamCode'||act==='memberName'){const x=document.getElementById(act);if(x)x.focus();}
 }
 function renderTrendPage(){
-  document.getElementById('trendPage').innerHTML=`<div class='card'><h2>📈 的中推移</h2><div class='btn-group tabs'>${tabs('per',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('type',TYPES)}</div>${trendBody()}</div>`;
+  /* 表示する人を選ぶ（初期値は自分）。名前はスナップショットから同期的に作る。 */
+  const ids=teamMemberIds('all');
+  const uid=(st.tmember&&ids.includes(st.tmember))?st.tmember:(myId||'me');
+  const opts=ids.map(id=>{
+    const label=(id===myId||id==='me')?(myName||'あなた'):(members[id]&&members[id].name)||('メンバー'+String(id).slice(0,4));
+    return `<option value='${id}' ${id===uid?'selected':''}>${esc(label)}</option>`;
+  }).join('');
+  document.getElementById('trendPage').innerHTML=`<div class='card'><h2>📈 的中推移</h2><div class='sess-row'><span style='font-size:.82rem'>表示する人：</span><select data-k='tmember'>${opts}</select></div><div class='btn-group tabs'>${tabs('tper',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('ttype',TYPES)}</div>${trendBody()}</div>`;
 }
 async function renderRankPage(){
   const tok=++rtok,el=document.getElementById('rankPage');
@@ -1699,7 +1896,7 @@ document.getElementById('loginGate').addEventListener('click',authBarClick);
     const ta=e.target.closest('button[data-team-act]');if(ta){
       if(ta.dataset.teamAct==='create')createTeam();
       else if(ta.dataset.teamAct==='join')joinTeam();
-      else if(ta.dataset.teamAct==='saveName'){const x=document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);saveLocalTeams();teamMsg=myName?'表示名を「'+myName+'」にしました':'';scheduleShare();updateAuthBar();renderStats();}
+      else if(ta.dataset.teamAct==='saveName'){const x=document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);saveLocalTeams();if(dbCap&&myId){dbCap.doc('members/'+myId).set({name:myName,updated:Date.now()},{merge:true}).catch(()=>{});}teamMsg=myName?'表示名を「'+myName+'」にしました':'';scheduleShare();updateAuthBar();renderStats();}
       else if(ta.dataset.teamAct==='addMember'){const x=document.getElementById('memberName');const n=((x&&x.value)||'').trim().slice(0,20);if(!n){teamMsg='追加する名前を入力してください';renderStats();return;}addRosterMember(n);}
       return;}
     const r=e.target.closest('[data-uid]');if(r){st.member=r.dataset.uid;renderStats();window.scrollTo(0,0);}
@@ -1707,6 +1904,19 @@ document.getElementById('loginGate').addEventListener('click',authBarClick);
   tp.addEventListener('change',e=>{const sel=e.target.closest('select[data-k]');if(sel)setStat(sel.dataset.k,sel.value);});
 });
 window.addEventListener('hashchange',applyHash);
+/* 別タブで記録が変わったら、このタブの表示も読み直す（2タブ同時使用で上書きされないようにするため） */
+window.addEventListener('storage',e=>{
+  if(e.key!==STORE_KEY||!e.newValue)return;
+  try{
+    const o=JSON.parse(e.newValue);
+    if(o&&Array.isArray(o.sessions)&&o.sessions.length){
+      store=o;
+      if(!store.sessions.some(s=>s.id===store.currentId))store.currentId=store.sessions[store.sessions.length-1].id;
+      shots=curSession().shots;
+      renderAll();renderStats();
+    }
+  }catch(err){}
+});
 applyHash();
 
 // 保存済み動画の復元
