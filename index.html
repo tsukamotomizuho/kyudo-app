@@ -703,12 +703,26 @@ function clearLocalUserData(){
   shareMode='all';
   try{localStorage.setItem('kyudo_share','all');}catch(e){}
 }
+/* ユーザー切替の前に、前のユーザーの端末内データを Firestore に送る。
+   送れなかった記録が、切替時の消去で失われないようにするため。
+   送れなくても消去は進める（消さないと前の人のデータが新しい人に混ざるため）。 */
+async function flushOldUserData(prevUid){
+  if(!dbCap||!prevUid)return;
+  try{
+    const {ss}=compactSessions();
+    const ref=dbCap.doc('members/'+prevUid);
+    const snap=await ref.get();
+    const r=snap&&snap.exists?snap.data():null;
+    const keep=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
+    await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:consent||null,updated:Date.now(),sessions:keep},{merge:true});
+  }catch(e){}
+}
 /* ログイン中のユーザーが前回と違う Google ユーザーなら、端末内のデータを消す。
    匿名→Google の連携（uid が変わらない場合）は引き継がれる。 */
-function noteAuthUser(u){
+async function noteAuthUser(u){
   if(!u||u.isAnonymous)return;
   let prev=null;try{prev=localStorage.getItem(OWNER_KEY);}catch(e){}
-  if(prev&&prev!==u.uid)clearLocalUserData();
+  if(prev&&prev!==u.uid){await flushOldUserData(prev);clearLocalUserData();}
   try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
 }
 /* ---- チーム（単体HTMLでも使えるローカル登録） ----
@@ -780,7 +794,7 @@ function updateTeamBar(){
 /* 動画以外のデータはすべて Firestore に保存する（端末内は読み込み用の控え）。
    共有モードは「すべて共有」「試合のみ」の2択。「共有しない」はない。 */
 let shareMode='all',shareTimer=null,lastShared=null,sharing=false,rtok=0;
-try{shareMode=localStorage.getItem('kyudo_share')||'all';if(shareMode==='off')shareMode='all';}catch(e){}
+try{shareMode=localStorage.getItem('kyudo_share')||'all';if(shareMode!=='all')shareMode='all';}catch(e){}
 
 function compactSessions(){
   const r=x=>Math.round(x*100)/100;
@@ -795,8 +809,9 @@ function scheduleShare(){if(!dbCap||!myId)return;clearTimeout(shareTimer);shareT
 async function doShare(){
   if(sharing){scheduleShare();return;}
   /* 初回スナップショットがまだ届いていない間は書かない。
-     届く前に空の記録で上書きして、Firestore 側の記録を消すのを防ぐため。 */
-  if(!membersFirst)return;
+     届く前に空の記録で上書きして、Firestore 側の記録を消すのを防ぐため。
+     ただし捨てずにやり直す（捨てると、その記録が共有されないままになるため）。 */
+  if(!membersFirst){scheduleShare();return;}
   sharing=true;
   try{
     const ref=dbCap.doc('members/'+myId),r=members[myId];
@@ -814,7 +829,8 @@ async function doShare(){
   rerender();
 }
 function setShare(m){
-  if(m==='off')m='all';
+  /* 共有は常にON（すべて共有）。「試合のみ」「共有しない」にはできない。 */
+  m='all';
   shareMode=m;
   try{localStorage.setItem('kyudo_share',m);}catch(e){}
   lastShared=null;shareStatus='';scheduleShare();renderStats();
@@ -948,7 +964,8 @@ function authBarClick(e){const b=e.target.closest('button[data-auth-act]');if(!b
    （IDで重複を除く）。別の端末でつけた記録がここで読み込まれる。 */
 function adoptMembersDoc(){
   const m=members[myId];if(!m)return;
-  if(m.mode)shareMode=(m.mode==='off'?'all':m.mode);
+  /* 共有は常にON（すべて共有）。Firestore 側が「試合のみ」でも「すべて共有」に移行する。 */
+  shareMode='all';
   if(m.profile)profile=Object.assign({},m.profile);
   /* Firestore の名前を正とする（別端末で変えた名前もここで反映される） */
   if(m.name)myName=m.name;
@@ -995,7 +1012,7 @@ async function initFirebase(){
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
     try{await auth.getRedirectResult();}catch(e){authMsg='Googleログインできませんでした：'+((e&&e.message)||e);}
-    auth.onAuthStateChanged(u=>{if(u){noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();}});
+    auth.onAuthStateChanged(async u=>{if(u){await noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();}});
     dbCap=firebase.firestore();
     userCap={
       id:async()=>auth.currentUser?auth.currentUser.uid:'',
@@ -1018,7 +1035,7 @@ async function initFirebase(){
       return true;
     }
     myId=user.uid;
-    noteAuthUser(user);
+    await noteAuthUser(user);
     if(user.displayName&&!myName){myName=user.displayName;saveLocalTeams();}
     firebaseStatus='Firebase Firestore（'+firebaseProject+'）に接続中';
     if(!user.isAnonymous)startMembersSync();
@@ -1116,7 +1133,11 @@ async function handleIconFile(file,ctx){
 }
 function rankRowHtml(r,i,nm){
   const medals=['🥇','🥈','🥉'];
-  if(!r.b)return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>—</div><div class='rank-main'>${iconImg(r.id,28)} ${esc(nm[r.id])}<div class='vtag'>この期間の記録なし</div></div><div class='rank-val'>—<div class='vtag'>記録を見る ›</div></div></div>`;
+  if(!r.b){
+    const all=allSessionsOf(r.id);
+    const shots=all.reduce((a,s)=>a+s.shots.length,0);
+    return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>—</div><div class='rank-main'>${iconImg(r.id,28)} ${esc(nm[r.id])}<div class='vtag'>この期間の記録なし　共有中の記録：${all.length}件（${shots}本）</div></div><div class='rank-val'>—<div class='vtag'>記録を見る ›</div></div></div>`;
+  }
   return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${iconImg(r.id,28)} ${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`;
 }
 /* ---- チーム ---- */
@@ -1580,8 +1601,8 @@ function shareCard(){
   <div class='sess-row' style='margin-top:8px'><button class='pri' data-fb-act='save'>Firebaseに接続する</button></div>
   ${firebaseStatus?`<p class='hint-text'><b>${esc(firebaseStatus)}</b></p>`:''}
   <p class='hint-text' style='text-align:left'>手順：① console.firebase.google.com でプロジェクト作成（場所：asia-northeast1）②「Firestore Database」を作成 ③「Authentication → ログイン方法」で匿名を有効化 ④「プロジェクトの設定 → マイアプリ → ウェブアプリ」で config をコピー ⑤ Firestoreの「ルール」に firestore.rules を貼って公開する。</p></div>`;
-  const btns=[['match','🏆 試合のみ'],['all','すべて共有']].map(([v,l])=>`<button class='${shareMode===v?'active':''}' data-share='${v}'>${l}</button>`).join('');
-  return `<div class='card'><h2>👥 メンバーと共有</h2><div class='btn-group tabs'>${btns}</div><p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p><div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
+  const btns=`<p class='hint-text' style='text-align:left'><b>共有：すべて共有（常にON）</b></p>`;
+  return `<div class='card'><h2>👥 メンバーと共有</h2>${btns}<p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p><div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
 }
 function renderStats(){
   const pg=document.body.dataset.pg;
