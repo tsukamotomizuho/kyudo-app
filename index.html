@@ -2690,9 +2690,9 @@ async function renderRankPage(){
   try{body=st.member?await memberBody(st.member):await rankBody();}
   catch(e){body="<p class='hint-text'>表示中にエラーが発生しました</p>";}
   if(tok!==rtok)return;
-  /* ランキングの下にチームカードを付ける（チームに所属している場合だけ。未所属の人はチームページで作成・参加する）。
-     管理者の共有カードはチームページだけに残す。 */
-  el.innerHTML=head+body+'</div>'+(myTeams.length?teamCard():'');
+  /* ランキングの下にチームカードを付けるのは、チームに所属していない場合だけ（ここから作成・参加できる）。
+     所属している人はチームページでチームを見る。管理者の共有カードはチームページだけに残す。 */
+  el.innerHTML=head+body+'</div>'+(myTeams.length?'':teamCard());
   ['teamName','teamCode','memberName','myNameInput'].forEach(id=>{const x=el.querySelector('#'+id);if(x&&keep[id])x.value=keep[id];});
   if(act==='teamName'||act==='teamCode'||act==='memberName'||act==='myNameInput'){const x=el.querySelector('#'+act);if(x)x.focus();}
 }
