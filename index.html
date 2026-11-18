@@ -600,7 +600,9 @@ function toggleCheck(i,v){const el=document.getElementById('chkItem_'+i);if(el)e
    末尾のモジュールスクリプトが window.__geminiGenerate に設定する（App Check 付き）。
    テスト用に window.__aiGenerate があればそちらを優先する。 */
 const AI_MODEL='gemini-3.5-flash-lite'; /* 軽量モデル。gemini-2.0-flash は 2026-06-01 に廃止のため使わない */
-const AI_LAST_KEY='kyudo_ai_last_date_v1';
+const AI_LAST_KEY='kyudo_ai_last_date_v1'; /* 旧方式（使った日だけ）。移行用に読むだけ */
+const AI_USAGE_KEY='kyudo_ai_usage_v1'; /* {date, count} 1日の利用回数 */
+const AI_DAILY_LIMIT=2; /* AI分析は1日2回まで */
 const AI_HIST_KEY='kyudo_ai_history_v1';
 const AI_HIST_MAX=10;
 
@@ -630,8 +632,14 @@ let lastDiag=null;      /* updateDiagnosis() が入れる構造化された診�
 let diagChecked=[];     /* ユーザーがチェックした原因項目の index */
 let aiCurrentText='',aiCurrentNote='',aiBusy=false,aiHistOpen=-1,aiLastError=null;
 function aiTodayStr(){return dstr(new Date());}
+/* 今日のAI分析の利用回数。旧方式（AI_LAST_KEY に今日が入っている）なら1回とみなす */
+function aiUsageToday(){
+  const today=aiTodayStr();
+  try{const u=JSON.parse(localStorage.getItem(AI_USAGE_KEY)||'null');if(u&&u.date===today)return Math.max(0,u.count|0);}catch(e){}
+  return aiLastDate()===today?1:0;
+}
+function aiRecordUsage(){const today=aiTodayStr();try{localStorage.setItem(AI_USAGE_KEY,JSON.stringify({date:today,count:aiUsageToday()+1}));}catch(e){}}
 function aiLastDate(){try{return localStorage.getItem(AI_LAST_KEY)||'';}catch(e){return '';}}
-function aiSetLastDate(d){try{localStorage.setItem(AI_LAST_KEY,d);}catch(e){}}
 function loadAiHistory(){try{const a=JSON.parse(localStorage.getItem(AI_HIST_KEY)||'[]');return Array.isArray(a)?a.filter(x=>x&&typeof x==='object'):[];}catch(e){return [];}}
 function saveAiHistory(en){try{const a=loadAiHistory();a.unshift(en);localStorage.setItem(AI_HIST_KEY,JSON.stringify(a.slice(0,AI_HIST_MAX)));}catch(e){}}
 function deleteAiHist(i){try{const a=loadAiHistory();a.splice(i,1);localStorage.setItem(AI_HIST_KEY,JSON.stringify(a));}catch(e){}if(aiHistOpen===i)aiHistOpen=-1;renderAiBox();}
@@ -671,7 +679,7 @@ function buildAiPrompt(withFrames){
     '【直近の矢所】'+JSON.stringify(recent)+'（x,yは的中心からの相対座標で-1〜1、h=1が的中）',
   ];
   /* 静止画付きのときは、射形についてもコメントするよう1節を追加する */
-  if(withFrames)lines.push('【射形の静止画】この後に添付する4枚の静止画は、射形動画から切り出したもので、構え・引分け・離れ・残心の順です。診断結果と合わせて、姿勢・引分け・離れ・残心についてもコメントしてください。');
+  if(withFrames)lines.push('【射形の静止画】この後に添付する10枚の静止画は、射形動画を時系列順に切り出したもので、射の始めから終わりまでの流れです。診断結果と合わせて、構え・打起し・引分け・会・離れ・残心の流れに沿って射形についてもコメントしてください。');
   lines.push('【指示】診断と推移を突き合わせて、(1)まとめ (2)原因の絞り込み (3)練習のポイントを、合わせて300字程度の日本語で返してください。断定は避け「可能性があります」等の表現を使い、医療的な助言はしないでください。');
   return lines.join('\n');
 }
@@ -693,7 +701,7 @@ function aiErrorMessage(e){
    再生時間の 0.05/0.35/0.65/0.95 あたりのフレームを JPEG base64（data: なし）で返す。
    動画そのものは送らない。失敗したら [] を返す（例外は投げない）。 */
 async function extractVideoFrames(source,count){
-  count=count||4;
+  count=count||10;
   if(!source)return [];
   let url=null,own=false;
   try{
@@ -741,7 +749,7 @@ async function extractVideoFrames(source,count){
   }catch(e){return [];}
 }
 /* 診断対象の射のうち、動画付きの最新の1本から静止画を集める。
-   動画そのものは送らず、静止画（最大4枚）だけを返す。失敗時は空を返す。 */
+   動画そのものは送らず、静止画（最大10枚）だけを返す。失敗時は空を返す。 */
 async function collectAiFrames(){
   try{
     const pool=(store.sessions||[]).flatMap(x=>x.shots||[]);
@@ -757,7 +765,7 @@ async function collectAiFrames(){
       if(!blob)return {shotId:null,frames:[]};
       src=blob;
     }
-    const frames=await extractVideoFrames(src,4);
+    const frames=await extractVideoFrames(src,10);
     if(!frames||!frames.length)return {shotId:null,frames:[]};
     return {shotId:target.id,frames:frames};
   }catch(e){return {shotId:null,frames:[]};}
@@ -769,8 +777,8 @@ async function runAiAnalysis(){
   if(!aiSubscriptionActive()){aiCurrentText='';aiCurrentNote='';renderAiBox();return;}
   const today=aiTodayStr();
   const hist=loadAiHistory();
-  if(aiLastDate()===today&&hist.length){
-    aiCurrentText=hist[0].text;aiCurrentNote='今日はもう分析済みです。最新の結果を表示しています。';
+  if(aiUsageToday()>=AI_DAILY_LIMIT&&hist.length){
+    aiCurrentText=hist[0].text;aiCurrentNote='今日はもう'+AI_DAILY_LIMIT+'回分析済みです。最新の結果を表示しています。';
     renderAiBox();return;
   }
   if(!lastDiag||!lastDiag.n){
@@ -788,7 +796,7 @@ async function runAiAnalysis(){
     if(!t)throw new Error('empty');
     aiCurrentText=t;aiCurrentNote='';
     saveAiHistory({at:Date.now(),date:today,scope:lastDiag.scope,badge:lastDiag.badge||'',text:t});
-    aiSetLastDate(today);
+    aiRecordUsage();
   }catch(e){
     aiCurrentText='';aiCurrentNote=aiErrorMessage(e);
     /* 失敗の本当の理由（コードと内容）を残す。画面と管理者診断に表示する */
@@ -807,7 +815,7 @@ function renderAiBox(){
   }).join('');
   box.innerHTML=`<div style='margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)'>
     <div class='sess-row'><span style='font-size:.88rem;font-weight:bold'>🤖 AI分析</span><button class='pri' id='aiBtn' onclick='runAiAnalysis()' ${aiBusy?'disabled':''}>AI分析する</button></div>
-    <p class='hint-text' style='text-align:left'>診断結果と的中率の推移をAIが分析します。1日1回まで。名前・メールは送られません。動画がついている射がある場合、その静止画も分析に使います。</p>
+    <p class='hint-text' style='text-align:left'>診断結果と的中率の推移をAIが分析します。1日2回まで。名前・メールは送られません。動画がついている射がある場合、その静止画も分析に使います。</p>
     ${aiSubscriptionActive()?'':aiPaywallHtml()}
     ${aiCurrentNote?`<p class='hint-text' style='text-align:left'><b>${esc(aiCurrentNote)}</b></p>`:''}
     ${aiLastError?`<p class='hint-text' style='text-align:left;font-size:.75rem'>エラー詳細：${esc(aiLastError.code?aiLastError.code+'：':'')}${esc(aiLastError.message)}</p>`:''}
