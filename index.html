@@ -1664,8 +1664,10 @@ function genCode(){
   (window.crypto||{getRandomValues:x=>x.forEach((_,i)=>{x[i]=Math.floor(Math.random()*4294967296);})}).getRandomValues(a);
   return Array.from(a,v=>c[v%c.length]).join('');
 }
-async function createTeam(){
-  const el=document.getElementById('teamName'),name=((el&&el.value)||'').trim().slice(0,30);
+async function createTeam(root){
+  /* root が渡された場合はその中の入力を読む（ランキングとチームの両ページに
+     teamCard があるため、document 全体では先に現れる方の入力を読んでしまう）。 */
+  const el=(root&&root.querySelector?root.querySelector('#teamName'):document.getElementById('teamName')),name=((el&&el.value)||'').trim().slice(0,30);
   if(!name){teamMsg='チーム名を入力してください';renderStats();return;}
   if(myTeams.length){teamMsg='チームは1つだけ参加できます。まず今のチームを退出してください';renderStats();return;}
   if(!dbCap){createLocalTeam(name);return;}
@@ -1686,8 +1688,8 @@ async function createTeam(){
   }catch(e){teamMsg='チームを作成できませんでした（このページの編集権限をご確認ください）';}
   renderStats();
 }
-async function joinTeam(){
-  const el=document.getElementById('teamCode'),code=((el&&el.value)||'').trim().toUpperCase();
+async function joinTeam(root){
+  const el=(root&&root.querySelector?root.querySelector('#teamCode'):document.getElementById('teamCode')),code=((el&&el.value)||'').trim().toUpperCase();
   if(!code){teamMsg='招待コードを入力してください';renderStats();return;}
   if(myTeams.length){teamMsg='チームは1つだけ参加できます。まず今のチームを退出してください';renderStats();return;}
   if(!dbCap){joinLocalTeam(code);return;}
@@ -1737,7 +1739,9 @@ function teamCard(){
     const list=myTeams.map(id=>{
       const ti=teamInfo[id]||{};
       const cnt=(localRoster[id]||[]).length;
-      return `<div class='sess-item${t===id?' cur':''}'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>名簿 ${cnt}人　招待コード：<b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}'>コピー</button></div></div><div class='btn-group'><button data-team-show='${id}'>表示</button><button class='danger' data-leave='${id}'>退出</button></div></div>`;
+      /* 3段レイアウト：①チーム名＋表示・退出（右、1行に収まる）②名簿人数＋招待コード＋コピー（同じ行）。
+         ボタン類は nowrap・shrink 対策で狭い画面でも縦に割れないようにする。 */
+      return `<div class='sess-item${t===id?' cur':''}' style='display:block'><div style='display:flex;justify-content:space-between;align-items:center;gap:8px'><b>${esc(ti.name||'チーム')}</b><div class='btn-group' style='flex-shrink:0'><button data-team-show='${id}' style='white-space:nowrap'>表示</button><button class='danger' data-leave='${id}' style='white-space:nowrap'>退出</button></div></div><div class='vtag'>名簿 ${cnt}人　招待コード：<span style='white-space:nowrap'><b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}' style='white-space:nowrap;flex-shrink:0'>コピー</button></span></div></div>`;
     }).join('');
     const roster=(t!=='all'?(localRoster[t]||[]):[]).map(m=>`<div class='sess-item'><div><b>${esc(m.name)}</b><div class='vtag'>記録なし（まだ共有されていません）</div></div><button class='danger' data-remove-member='${m.id}'>削除</button></div>`).join('');
     return `<div class='card'><h2>🏷 チーム</h2>
@@ -1753,7 +1757,10 @@ function teamCard(){
   }
   const list=myTeams.map(id=>{
     const ti=teamInfo[id]||{},ms=teamMemberNames(id);
-    return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>メンバー ${ms.length}人　招待コード：<b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}'>コピー</button>${ms.length?'<br>'+ms.map(x=>iconImg(x.id,20)+' '+esc(x.name)).join('、'):''}</div></div><button class='danger' data-leave='${id}'>退出</button></div>`;
+    /* 3段レイアウト：①チーム名＋退出（右、1行に収まる）②メンバー ③招待コード＋コピー（同じ行）。
+       .sess-item は flex のため display:block で縦積みにし、ボタン類は nowrap・shrink 対策で
+       狭い画面でも「退出」が縦に割れないようにする。 */
+    return `<div class='sess-item' style='display:block'><div style='display:flex;justify-content:space-between;align-items:center;gap:8px'><b>${esc(ti.name||'チーム')}</b><button class='danger' data-leave='${id}' style='white-space:nowrap;flex-shrink:0'>退出</button></div><div class='vtag'>メンバー ${ms.length}人</div><div class='vtag'>招待コード：<span style='white-space:nowrap'><b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}' style='white-space:nowrap;flex-shrink:0'>コピー</button></span></div>${ms.length?`<div class='vtag'>${ms.map(x=>iconImg(x.id,20)+' '+esc(x.name)).join('、')}</div>`:''}</div>`;
   }).join('');
   return `<div class='card'><h2>🏷 チーム</h2>
   <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
@@ -1934,7 +1941,8 @@ function renderProfilePage(){
   const grade=keep.pfGrade!==''?keep.pfGrade:(p.grade||'');
   const years=keep.pfYears!==''?keep.pfYears:(p.years||'');
   const bio=keep.pfBio!==''?keep.pfBio:(p.bio||'');
-  const teams=myTeams.map(id=>{const ti=teamInfo[id]||{};return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>招待コード：<b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}'>コピー</button></div></div></div>`;}).join('');
+  /* 退出ボタンはここには無いが、招待コードとコピーボタンは同じ行に付くよう nowrap で囲む。 */
+  const teams=myTeams.map(id=>{const ti=teamInfo[id]||{};return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>招待コード：<span style='white-space:nowrap'><b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}' style='white-space:nowrap;flex-shrink:0'>コピー</button></span></div></div></div>`;}).join('');
   el.innerHTML=`<div class='card'><h2>👤 プロフィール</h2>
   <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからいつでも変えられます。</p>
   ${(()=>{const u=authUser();return u&&u.email?`<p class='hint-text' style='text-align:left'>ログイン中のアカウント：${esc(u.email)}</p>`:'';})()}
@@ -2218,12 +2226,13 @@ function renderStats(){
 function renderTeamPage(){
   const el=document.getElementById('teamPage');if(!el)return;
   ensureTeamInfo();
-  const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
+  /* 入力の読み書きはこのページ内に限る（ランキングページにも同じ id の入力があるため）。 */
+  const val=id=>{const x=el.querySelector('#'+id);return x?x.value:'';};
   const act=document.activeElement&&document.activeElement.id;
   const keep={teamName:val('teamName'),teamCode:val('teamCode'),memberName:val('memberName'),myNameInput:val('myNameInput'),fbConfigInput:val('fbConfigInput')};
   el.innerHTML=teamCard()+shareCard();
-  ['teamName','teamCode','memberName','myNameInput','fbConfigInput'].forEach(id=>{const x=document.getElementById(id);if(x&&keep[id])x.value=keep[id];});
-  if(act==='teamName'||act==='teamCode'||act==='memberName'){const x=document.getElementById(act);if(x)x.focus();}
+  ['teamName','teamCode','memberName','myNameInput','fbConfigInput'].forEach(id=>{const x=el.querySelector('#'+id);if(x&&keep[id])x.value=keep[id];});
+  if(act==='teamName'||act==='teamCode'||act==='memberName'){const x=el.querySelector('#'+act);if(x)x.focus();}
 }
 function renderTrendPage(){
   /* 表示する人を選ぶ（初期値は自分）。名前はスナップショットから同期的に作る。 */
@@ -2237,12 +2246,21 @@ function renderTrendPage(){
 }
 async function renderRankPage(){
   const tok=++rtok,el=document.getElementById('rankPage');
+  ensureTeamInfo();
+  /* チームカードの入力はこのページ内に限って保持・復元する（チームページにも同じ id の入力があるため）。 */
+  const val=id=>{const x=el.querySelector('#'+id);return x?x.value:'';};
+  const act=document.activeElement&&document.activeElement.id;
+  const keep={teamName:val('teamName'),teamCode:val('teamCode'),memberName:val('memberName'),myNameInput:val('myNameInput')};
   const head=`<div class='card'><h2>🏅 的中ランキング</h2><div class='btn-group tabs'>${tabs('per',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('type',TYPES)}</div>`;
   let body='';
   try{body=st.member?await memberBody(st.member):await rankBody();}
   catch(e){body="<p class='hint-text'>表示中にエラーが発生しました</p>";}
   if(tok!==rtok)return;
-  el.innerHTML=head+body+'</div>';
+  /* ランキングの下にチームカードを付ける（チーム未登録の人もここから作成・参加できる）。
+     管理者の共有カードはチームページだけに残す。 */
+  el.innerHTML=head+body+'</div>'+teamCard();
+  ['teamName','teamCode','memberName','myNameInput'].forEach(id=>{const x=el.querySelector('#'+id);if(x&&keep[id])x.value=keep[id];});
+  if(act==='teamName'||act==='teamCode'||act==='memberName'||act==='myNameInput'){const x=el.querySelector('#'+act);if(x)x.focus();}
 }
 
 document.getElementById('nav').addEventListener('click',e=>{const b=e.target.closest('button[data-pg]');if(b)setPage(b.dataset.pg);});
@@ -2311,10 +2329,13 @@ document.getElementById('loginGate').addEventListener('click',authBarClick);
     const sh=e.target.closest('button[data-team-show]');if(sh){st.team=sh.dataset.teamShow;updateTeamBar();renderStats();return;}
     const rm=e.target.closest('button[data-remove-member]');if(rm){const t=teamNow();if(t!=='all'){localRoster[t]=(localRoster[t]||[]).filter(m=>m.id!==rm.dataset.removeMember);saveLocalTeams();renderStats();}return;}
     const ta=e.target.closest('button[data-team-act]');if(ta){
-      if(ta.dataset.teamAct==='create')createTeam();
-      else if(ta.dataset.teamAct==='join')joinTeam();
-      else if(ta.dataset.teamAct==='saveName'){const x=document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);nameUpdatedAt=Date.now();saveLocalTeams();if(dbCap&&myId){dbCap.doc('members/'+myId).set({name:myName,updated:Date.now()},{merge:true}).catch(()=>{});}teamMsg=myName?'表示名を「'+myName+'」にしました':'';scheduleShare();updateAuthBar();renderStats();}
-      else if(ta.dataset.teamAct==='addMember'){const x=document.getElementById('memberName');const n=((x&&x.value)||'').trim().slice(0,20);if(!n){teamMsg='追加する名前を入力してください';renderStats();return;}addRosterMember(n);}
+      /* 押されたボタンと同じカード内の入力を読む（ランキングとチームの両ページに
+         同じ id の入力があるため）。 */
+      const card=ta.closest('.card');
+      if(ta.dataset.teamAct==='create')createTeam(card);
+      else if(ta.dataset.teamAct==='join')joinTeam(card);
+      else if(ta.dataset.teamAct==='saveName'){const x=card?card.querySelector('#myNameInput'):document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);nameUpdatedAt=Date.now();saveLocalTeams();if(dbCap&&myId){dbCap.doc('members/'+myId).set({name:myName,updated:Date.now()},{merge:true}).catch(()=>{});}teamMsg=myName?'表示名を「'+myName+'」にしました':'';scheduleShare();updateAuthBar();renderStats();}
+      else if(ta.dataset.teamAct==='addMember'){const x=card?card.querySelector('#memberName'):document.getElementById('memberName');const n=((x&&x.value)||'').trim().slice(0,20);if(!n){teamMsg='追加する名前を入力してください';renderStats();return;}addRosterMember(n);}
       return;}
     const r=e.target.closest('[data-uid]');if(r){st.member=r.dataset.uid;renderStats();window.scrollTo(0,0);}
   });
