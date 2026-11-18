@@ -722,7 +722,7 @@ async function flushOldUserData(prevUid){
 async function noteAuthUser(u){
   if(!u||u.isAnonymous)return;
   let prev=null;try{prev=localStorage.getItem(OWNER_KEY);}catch(e){}
-  if(prev&&prev!==u.uid){await flushOldUserData(prev);clearLocalUserData();}
+  if(prev&&prev!==u.uid){await flushOldUserData(prev);clearLocalUserData();updateTeamBar();renderStats();}
   try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
 }
 /* ---- チーム（単体HTMLでも使えるローカル登録） ----
@@ -1395,6 +1395,7 @@ function renderProfilePage(){
   const teams=myTeams.map(id=>{const ti=teamInfo[id]||{};return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>招待コード：<b>${esc(ti.code||'')}</b> <button data-copy-code='${esc(ti.code||'')}'>コピー</button></div></div></div>`;}).join('');
   el.innerHTML=`<div class='card'><h2>👤 プロフィール</h2>
   <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからいつでも変えられます。</p>
+  ${(()=>{const u=authUser();return u&&u.email?`<p class='hint-text' style='text-align:left'>ログイン中のアカウント：${esc(u.email)}</p>`:'';})()}
   <div class='profile-field'><label>アイコン</label><div style='display:flex;align-items:center;gap:10px'>${profile.icon?`<img class='avatar-icon lg' src='${profile.icon}' alt=''>`:'<span style="font-size:48px;line-height:1">👤</span>'}<button type='button' onclick="document.getElementById('pfIconFile').click()">画像を選ぶ</button>${profile.icon?`<button type='button' data-pf-act='removeIcon'>外す</button>`:''}</div><input type='file' id='pfIconFile' accept='image/*'></div>
   <div class='profile-field'><label>表示名（必須）</label><input type='text' id='pfName' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(name)}'/></div>
   <div class='profile-field'><label>所属</label><input type='text' id='pfOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(org)}'/></div>
