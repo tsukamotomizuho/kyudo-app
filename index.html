@@ -74,6 +74,10 @@ input[type=date],input[type=text]{font:inherit;font-size:.9rem;padding:7px 8px;b
 .team-bar{font-size:.78rem;color:var(--muted);text-align:center;margin:-4px 0 10px}
 .auth-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin:-2px 2px 10px}
 .auth-bar button{padding:4px 10px;font-size:.8rem}
+.avatar-icon{width:34px;height:34px;border-radius:50%;object-fit:cover;vertical-align:middle;flex:none;background:var(--soft)}
+.avatar-icon.lg{width:72px;height:72px}
+.consent-list{text-align:left;font-size:.88rem;line-height:1.7;margin:8px 0;padding-left:20px}
+.consent-list li{margin-bottom:8px}
 .login-gate{position:fixed;inset:0;z-index:50;display:none;align-items:flex-start;justify-content:center;padding:18vh 16px 16px;background:rgba(244,241,234,.97);overflow:auto}
 .pg-trend,.pg-rank,.pg-profile,.pg-team{display:none}
 body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank,body[data-pg=profile] .pg-profile,body[data-pg=team] .pg-team{display:block}
@@ -682,6 +686,31 @@ const pct=b=>Math.round(b.h/b.n*100);
 /* ---- メンバー共有（db） ---- */
 let myId=null,dbCap=null,userCap=null,members={},memStatus='',shareStatus='',membersFirst=false;
 let myTeams=[],teamInfo={},teamMsg='';
+/* 共有への同意（Firestore の自分のドキュメントから読み込む） */
+let consent=null;
+const OWNER_KEY='kyudo_owner_uid_v1';
+/* 端末内の記録だけを保存する（共有は送らない） */
+function persistStore(){try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}catch(e){}}
+/* 端末内のユーザー別データをすべて消す。違うユーザーでログインしたときに呼ぶ。
+   共有より先に消すので、前の人のデータが新しい人の Firestore に混ざらない。 */
+function clearLocalUserData(){
+  const s=newSess();store.sessions=[s];store.currentId=s.id;shots=s.shots;
+  Object.keys(videoUrlMap).forEach(k=>{try{URL.revokeObjectURL(videoUrlMap[k]);}catch(e){}delete videoUrlMap[k];});
+  myTeams=[];myName='';profile={};localTeams=[];localRoster={};consent=null;
+  teamInfo={};st.team='all';st.member='';
+  lastShared=null;obDone=false;obStep=1;obChoice='';obMsg='';obProfile={};consentDone=false;
+  persistStore();saveLocalTeams();
+  shareMode='all';
+  try{localStorage.setItem('kyudo_share','all');}catch(e){}
+}
+/* ログイン中のユーザーが前回と違う Google ユーザーなら、端末内のデータを消す。
+   匿名→Google の連携（uid が変わらない場合）は引き継がれる。 */
+function noteAuthUser(u){
+  if(!u||u.isAnonymous)return;
+  let prev=null;try{prev=localStorage.getItem(OWNER_KEY);}catch(e){}
+  if(prev&&prev!==u.uid)clearLocalUserData();
+  try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
+}
 /* ---- チーム（単体HTMLでも使えるローカル登録） ----
    共有DB（claude db）が使える環境では既存のDB版を使い、
    使えない環境ではこの端末の localStorage にチームを保存する。
@@ -748,8 +777,10 @@ function updateTeamBar(){
   const ti=teamInfo[t]||{};
   el.textContent='🏷 '+(ti.name||'チーム')+'　招待コード：'+(ti.code||'—');
 }
-let shareMode='off',explicitOff=false,shareTimer=null,lastShared=null,sharing=false,rtok=0;
-try{shareMode=localStorage.getItem('kyudo_share')||'off';}catch(e){}
+/* 動画以外のデータはすべて Firestore に保存する（端末内は読み込み用の控え）。
+   共有モードは「すべて共有」「試合のみ」の2択。「共有しない」はない。 */
+let shareMode='all',shareTimer=null,lastShared=null,sharing=false,rtok=0;
+try{shareMode=localStorage.getItem('kyudo_share')||'all';if(shareMode==='off')shareMode='all';}catch(e){}
 
 function compactSessions(){
   const r=x=>Math.round(x*100)/100;
@@ -763,26 +794,19 @@ function compactSessions(){
 function scheduleShare(){if(!dbCap||!myId)return;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,1500);}
 async function doShare(){
   if(sharing){scheduleShare();return;}
+  /* 初回スナップショットがまだ届いていない間は書かない。
+     届く前に空の記録で上書きして、Firestore 側の記録を消すのを防ぐため。 */
+  if(!membersFirst)return;
   sharing=true;
   try{
     const ref=dbCap.doc('members/'+myId),r=members[myId];
-    const off=shareMode==='off';
-    const {ss,trimmed}=off?{ss:[],trimmed:false}:compactSessions();
-    shareStatus=off?'':(ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません');
-    if(off&&!myTeams.length){
-      /* 共有オフでもプロフィールと設定済みの印は残す（記録だけ消す）。
-         丸ごと削除すると初回設定がまた出てしまうため。 */
-      if(explicitOff&&r)await ref.set({v:2,mode:'off',teams:[],name:myName||'',profile:profile,updated:Date.now(),sessions:[]},{merge:true});
-      explicitOff=false;lastShared=null;
-    }else if(!off&&!ss.length&&!myTeams.length&&!r){
-      /* 書き込む内容なし */
-    }else{
-      const keep=(!off&&!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
-      const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(keep);
-      if(lastShared===null&&r&&((r.mode||'off')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
-      /* merge:true で書く：プロフィールや設定済みの印を消さないため */
-      if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
-    }
+    const {ss,trimmed}=compactSessions();
+    shareStatus=ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません';
+    const keep=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
+    const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(consent||null)+'|'+JSON.stringify(keep);
+    if(lastShared===null&&r&&((r.mode||'all')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.roster||{})+'|'+JSON.stringify(r.consent||null)+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
+    /* merge:true で書く：プロフィールや設定済みの印を消さないため */
+    if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:consent||null,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
   }catch(e){
     shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
   }
@@ -790,7 +814,8 @@ async function doShare(){
   rerender();
 }
 function setShare(m){
-  explicitOff=(m==='off');shareMode=m;
+  if(m==='off')m='all';
+  shareMode=m;
   try{localStorage.setItem('kyudo_share',m);}catch(e){}
   lastShared=null;shareStatus='';scheduleShare();renderStats();
 }
@@ -873,7 +898,7 @@ function updateAuthBar(){
   if(!dbCap){el.innerHTML='';updateLoginGate();return;}
   const u=authUser();
   if(u&&!u.isAnonymous){
-    el.innerHTML=`<span>👤 ${esc(u.displayName||u.email||'Googleアカウント')} でログイン中</span><button data-auth-act='logout'>ログアウト</button>`;
+    el.innerHTML=`${iconImg(myId,22)||'👤'} <span>${esc(u.displayName||u.email||'Googleアカウント')} でログイン中</span><button data-auth-act='logout'>ログアウト</button>`;
   }else{
     el.innerHTML=`<span>ゲストで利用中</span><button class='pri' data-auth-act='google'>Googleでログイン</button>`;
   }
@@ -917,7 +942,33 @@ async function logoutGoogle(){
   try{await firebase.auth().signOut();location.reload();}
   catch(e){authMsg='ログアウトできませんでした：'+((e&&e.message)||e);updateAuthBar();}
 }
-function authBarClick(e){const b=e.target.closest('button[data-auth-act]');if(!b)return;if(b.dataset.authAct==='google')loginWithGoogle();else if(b.dataset.authAct==='logout'){if(confirm('ログアウトしますか？記録はこの端末に残ります。'))logoutGoogle();}}
+function authBarClick(e){const b=e.target.closest('button[data-auth-act]');if(!b)return;if(b.dataset.authAct==='google')loginWithGoogle();else if(b.dataset.authAct==='logout'){if(confirm('ログアウトしますか？記録は Firebase に保存されています。'))logoutGoogle();}}
+/* Firestore の自分のドキュメントを端末内に取り込む（初回スナップショット時）。
+   プロフィール・同意・名簿・チーム・記録を読み込み、端末内の記録と統合する
+   （IDで重複を除く）。別の端末でつけた記録がここで読み込まれる。 */
+function adoptMembersDoc(){
+  const m=members[myId];if(!m)return;
+  if(m.mode)shareMode=(m.mode==='off'?'all':m.mode);
+  if(m.profile)profile=Object.assign({},m.profile);
+  if(!myName&&m.name)myName=m.name;
+  if(m.consent)consent=m.consent;
+  if(Array.isArray(m.roster))localRoster=Object.assign({},m.roster,localRoster);
+  if(Array.isArray(m.sessions)){
+    const byId=new Map(store.sessions.map(s=>[s.id,s]));
+    m.sessions.forEach(x=>{
+      if(!x||!x.id||byId.has(x.id))return;
+      byId.set(x.id,{id:x.id,date:x.d||todayStr(),type:x.t||'practice',title:x.ti||'',shots:(x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]}))});
+    });
+    store.sessions=[...byId.values()];
+    store.currentId=curSession().id;shots=curSession().shots;
+    persistStore();
+  }
+  if(Array.isArray(m.teams)){
+    /* Firestore側の参加チームと、この端末のローカルチームを両方残す */
+    myTeams=Array.from(new Set([].concat(myTeams,m.teams)));
+  }
+  saveLocalTeams();
+}
 function startMembersSync(){
   let first=true;
   const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
@@ -926,17 +977,7 @@ function startMembersSync(){
     snap.docs.forEach(d=>{members[d.id]=d.data();});
     if(first){
       first=false;membersFirst=true;
-      if(shareMode==='off'&&members[myId]&&members[myId].mode)shareMode=members[myId].mode;
-      if(members[myId]){
-        if(members[myId].profile)profile=Object.assign({},members[myId].profile);
-        if(!myName&&members[myId].name)myName=members[myId].name;
-        saveLocalTeams();
-      }
-      if(members[myId]&&Array.isArray(members[myId].teams)){
-        /* Firestore側の参加チームと、この端末のローカルチームを両方残す */
-        myTeams=Array.from(new Set([].concat(myTeams,members[myId].teams)));
-        saveLocalTeams();
-      }
+      adoptMembersDoc();
       scheduleShare();
       checkOnboarding();
     }
@@ -952,7 +993,7 @@ async function initFirebase(){
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
     try{await auth.getRedirectResult();}catch(e){authMsg='Googleログインできませんでした：'+((e&&e.message)||e);}
-    auth.onAuthStateChanged(u=>{if(u){if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();}});
+    auth.onAuthStateChanged(u=>{if(u){noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();}});
     dbCap=firebase.firestore();
     userCap={
       id:async()=>auth.currentUser?auth.currentUser.uid:'',
@@ -975,6 +1016,7 @@ async function initFirebase(){
       return true;
     }
     myId=user.uid;
+    noteAuthUser(user);
     if(user.displayName&&!myName){myName=user.displayName;saveLocalTeams();}
     firebaseStatus='Firebase Firestore（'+firebaseProject+'）に接続中';
     if(!user.isAnonymous)startMembersSync();
@@ -1002,10 +1044,10 @@ async function initFirebase(){
       clearTimeout(timer);memStatus='';members={};
       snap.docs.forEach(d=>{members[d.id]=d.data();});
       if(first){
-        first=false;
-        if(shareMode==='off'&&members[myId]&&members[myId].mode)shareMode=members[myId].mode;
-        if(members[myId]&&Array.isArray(members[myId].teams))myTeams=members[myId].teams.slice();
+        first=false;membersFirst=true;
+        adoptMembersDoc();
         scheduleShare();
+        checkOnboarding();
       }
       rerender();
     },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
@@ -1039,9 +1081,35 @@ function rankRowsFor(ids,per,sel){
   rows.sort((a,b)=>st.sort==='rate'?((b.b.n>=4)-(a.b.n>=4))||rk(b)-rk(a)||b.b.h-a.b.h:b.b.h-a.b.h||rk(b)-rk(a));
   return rows;
 }
+/* プロフィールアイコン（128×128 に縮小した JPEG を Firestore の profile に保存）。
+   自分は端末内の profile、他人は members の profile を見る。 */
+function iconImg(uid,s){
+  const p=uid&&(uid===myId||uid==='me')?profile:((members[uid]&&members[uid].profile)||{});
+  if(!p||!p.icon)return '';
+  return `<img class='avatar-icon' style='width:${s}px;height:${s}px' src='${p.icon}' alt=''>`;
+}
+async function handleIconFile(file,ctx){
+  if(!file)return;
+  try{
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=url;});
+    const s=128,cv=document.createElement('canvas');cv.width=s;cv.height=s;
+    const c=cv.getContext('2d');
+    const w=img.naturalWidth,h=img.naturalHeight,side=Math.min(w,h),sx=(w-side)/2,sy=(h-side)/2;
+    c.drawImage(img,sx,sy,side,side,0,0,s,s);
+    URL.revokeObjectURL(url);
+    const data=cv.toDataURL('image/jpeg',0.85);
+    if(ctx==='onboard'){obProfile.icon=data;renderOnboard();}
+    else{profile.icon=data;saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
+  }catch(e){
+    if(ctx==='onboard'){obMsg='画像を読み込めませんでした';renderOnboard();}
+    else{profileMsg='画像を読み込めませんでした';renderProfilePage();}
+  }
+}
 function rankRowHtml(r,i,nm){
   const medals=['🥇','🥈','🥉'];
-  return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`;
+  return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${iconImg(r.id,28)} ${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`;
 }
 /* ---- チーム ---- */
 async function loadTeams(){
@@ -1095,7 +1163,6 @@ function leaveTeam(id){
   if(!dbCap){leaveLocalTeam(id);return;}
   myTeams=myTeams.filter(x=>x!==id);
   if(st.team===id)st.team='';
-  if(shareMode==='off'&&!myTeams.length)explicitOff=true;
   teamMsg='';scheduleShare();renderStats();
 }
 /* チームの仲間の名前一覧（Firestoreの members から）。
@@ -1104,9 +1171,9 @@ function teamMemberNames(id){
   const seen={},out=[];
   Object.keys(members).forEach(mid=>{
     const m=members[mid];
-    if(m&&Array.isArray(m.teams)&&m.teams.includes(id)){seen[mid]=1;out.push(mid===myId?(myName||m.name||'あなた'):(m.name||'メンバー'));}
+    if(m&&Array.isArray(m.teams)&&m.teams.includes(id)){seen[mid]=1;out.push({id:mid,name:mid===myId?(myName||m.name||'あなた'):(m.name||'メンバー')});}
   });
-  if(myTeams.includes(id)&&!seen[myId])out.unshift(myName||'あなた');
+  if(myTeams.includes(id)&&!seen[myId])out.unshift({id:myId,name:myName||'あなた'});
   return out;
 }
 function teamCard(){
@@ -1131,7 +1198,7 @@ function teamCard(){
   }
   const list=myTeams.map(id=>{
     const ti=teamInfo[id]||{},ms=teamMemberNames(id);
-    return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>メンバー ${ms.length}人　招待コード：<b>${esc(ti.code||'')}</b>${ms.length?'<br>'+esc(ms.join('、')):''}</div></div><button class='danger' data-leave='${id}'>退出</button></div>`;
+    return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>メンバー ${ms.length}人　招待コード：<b>${esc(ti.code||'')}</b>${ms.length?'<br>'+ms.map(x=>iconImg(x.id,20)+' '+esc(x.name)).join('、'):''}</div></div><button class='danger' data-leave='${id}'>退出</button></div>`;
   }).join('');
   return `<div class='card'><h2>🏷 チーム</h2>
   <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
@@ -1264,7 +1331,7 @@ async function memberBody(uid){
     return `<div class='history-row'><div class='history-top'><div><b>${x.date.replace(/-/g,'/')}</b> <span class='mode-badge${x.type==='match'?' match':''}'>${x.type==='match'?'🏆 試合':'🏹 練習'}</span> ${esc(x.title||'')}</div><span class='vtag'>${sr.h}/${sr.n}（${sr.p}%）</span></div><div style='font-size:.82rem;margin-top:4px'>${stands.join('')}</div></div>`;
   }).join('');
   const legend=isMe?'':`<div class='legend'><span style='color:#d98e04'>●</span> あなた　<span style='color:var(--head)'>●</span> ${name}</div>`;
-  return `<button data-k='member' data-v=''>‹ ランキングに戻る</button><h2 style='margin:10px 0 6px'>${name} の記録</h2>`
+  return `<button data-k='member' data-v=''>‹ ランキングに戻る</button><h2 style='margin:10px 0 6px'>${iconImg(uid,30)} ${name} の記録</h2>`
     +(tot.n?`<div class='diag-summary'>${per==='year'?'年':per==='month'?'月':per==='week'?'週':'日'}別の推移　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg(series,per)}${legend}`:'')
     +`<div class='history-list'>${rows||'<div style="color:var(--muted);">該当する記録がありません</div>'}</div>`;
 }
@@ -1287,6 +1354,7 @@ function renderProfilePage(){
   const teams=myTeams.map(id=>{const ti=teamInfo[id]||{};return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>招待コード：<b>${esc(ti.code||'')}</b></div></div></div>`;}).join('');
   el.innerHTML=`<div class='card'><h2>👤 プロフィール</h2>
   <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからいつでも変えられます。</p>
+  <div class='profile-field'><label>アイコン</label><div style='display:flex;align-items:center;gap:10px'>${profile.icon?`<img class='avatar-icon lg' src='${profile.icon}' alt=''>`:'<span style="font-size:48px;line-height:1">👤</span>'}<button type='button' onclick="document.getElementById('pfIconFile').click()">画像を選ぶ</button>${profile.icon?`<button type='button' data-pf-act='removeIcon'>外す</button>`:''}</div><input type='file' id='pfIconFile' accept='image/*'></div>
   <div class='profile-field'><label>表示名（必須）</label><input type='text' id='pfName' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(name)}'/></div>
   <div class='profile-field'><label>所属</label><input type='text' id='pfOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(org)}'/></div>
   <div class='profile-field'><label>段位・級位</label><select id='pfGrade'>${gradeOptions(grade)}</select></div>
@@ -1296,14 +1364,20 @@ function renderProfilePage(){
   ${profileMsg?`<p class='hint-text'><b>${esc(profileMsg)}</b></p>`:''}
   <h2 style='margin:14px 0 4px'>🏷 所属チーム</h2>
   ${teams||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。チームの参加・作成はランキングページでできます。</p>"}
-  <p class='hint-text' style='text-align:left'>チームの参加・作成・退出はメニュー →「チーム」でできます。</p></div>`;
+  <p class='hint-text' style='text-align:left'>チームの参加・作成・退出はメニュー →「チーム」でできます。</p>
+  <h2 style='margin:14px 0 4px'>🔐 同意とデータ</h2>
+  <p class='hint-text' style='text-align:left'>${consent&&consent.agreed?('共有に同意済み'+(consent.at?('（'+new Date(consent.at).toLocaleDateString('ja-JP')+'）'):'')):'共有への同意がありません'}</p>
+  <div class='sess-row'><button data-pf-act='showConsent'>同意内容を見る</button><button data-pf-act='withdraw'>同意を撤回する</button></div>
+  <div class='sess-row'><button class='danger' data-pf-act='deleteData'>自分のデータを削除する</button></div></div>`;
 }
 async function saveProfile(){
   const v=id=>{const x=document.getElementById(id);return x?x.value.trim():'';};
   const name=v('pfName').slice(0,20);
   if(!name){profileMsg='表示名を入力してください';renderProfilePage();return;}
   myName=name;
+  const oldIcon=profile.icon;
   profile={org:v('pfOrg').slice(0,30),grade:v('pfGrade'),years:v('pfYears').slice(0,20),bio:v('pfBio').slice(0,200)};
+  if(oldIcon)profile.icon=oldIcon;
   saveLocalTeams();
   if(dbCap&&myId){
     try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,updated:Date.now()},{merge:true});}catch(e){}
@@ -1313,12 +1387,15 @@ async function saveProfile(){
 }
 
 /* ---- 初回ログイン時のオンボーディング ---- */
-let obStep=1,obChoice='',obMsg='',obDone=false,obProfile={};
+let obStep=1,obChoice='',obMsg='',obDone=false,obProfile={},consentDone=false;
 function checkOnboarding(){
   const g=document.getElementById('onboardOverlay');if(!g)return;
   const u=authUser();
-  const need=!!dbCap&&membersFirst&&u&&!u.isAnonymous&&!(members[myId]&&members[myId].onboarded)&&!obDone;
-  if(need){obStep=obStep||1;renderOnboard();}
+  const hasConsent=!!(members[myId]&&members[myId].consent&&members[myId].consent.agreed);
+  const needConsent=!!dbCap&&membersFirst&&u&&!u.isAnonymous&&!hasConsent&&!consentDone;
+  const needOnboard=!!dbCap&&membersFirst&&u&&!u.isAnonymous&&!(members[myId]&&members[myId].onboarded)&&!obDone;
+  if(needConsent){obStep=0;obMsg='';renderOnboard();}
+  else if(needOnboard){if(!obStep||obStep==='declined')obStep=1;renderOnboard();}
   else{g.style.display='none';g.innerHTML='';}
 }
 /* 入力中の値をステップをまたいで保持する（画面を作り直しても消えない） */
@@ -1334,9 +1411,24 @@ function renderOnboard(){
   const v=obProfileValues();
   const defName=myName||(u&&u.displayName)||'';
   let body='';
-  if(obStep===1){
+  if(obStep===0){
+    body=`<h2>🔐 はじめる前に確認してください</h2>
+    <p class='hint-text' style='text-align:left'>このアプリを使うには、次のことへの同意が必要です。</p>
+    <ul class='consent-list'>
+    <li>あなたの記録（日付・的中・矢所・練習／試合）とプロフィール（表示名・所属・段位・級位・弓歴・ひとこと）、アイコン画像、チーム名が、チームのメンバーやランキングで他の人に見られること。</li>
+    <li>記録・プロフィールは Firebase（東京リージョン）に保存されること。動画（射形動画）はあなたの端末内にだけ保存され、Firebase には送られません。</li>
+    <li>Google アカウントのメールアドレスはログイン認証にだけ使い、他の人には表示されず、Firebase にも保存されません。</li>
+    <li>自分のデータの削除を希望するときは、プロフィール画面の「自分のデータを削除する」からできます。</li>
+    </ul>
+    <div class='sess-row'><button class='pri' data-consent='agree'>同意してはじめる</button><button data-consent='decline'>同意しない</button></div>`;
+  }else if(obStep==='declined'){
+    body=`<h2>🔐 アプリを使うことができません</h2>
+    <p class='hint-text' style='text-align:left'>このアプリは、記録とプロフィールを他のメンバーと共有することへの同意が必要です。同意いただけない場合、アプリを使うことはできません。</p>
+    <div class='sess-row'><button class='pri' data-consent='back'>同意画面に戻る</button><button data-auth-act='logout'>ログアウト</button></div>`;
+  }else if(obStep===1){
     body=`<h2>👤 プロフィールを設定</h2>
     <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからメニュー →「プロフィール」で変えられます。</p>
+    <div class='profile-field'><label>アイコン</label><div style='display:flex;align-items:center;gap:10px'>${v.icon?`<img class='avatar-icon lg' src='${v.icon}' alt=''>`:'<span style="font-size:48px;line-height:1">👤</span>'}<button type='button' onclick="document.getElementById('obIconFile').click()">画像を選ぶ</button></div><input type='file' id='obIconFile' accept='image/*'></div>
     <div class='profile-field'><label>表示名（必須）</label><input type='text' id='obName' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(v.name||defName)}'/></div>
     <div class='profile-field'><label>所属</label><input type='text' id='obOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(v.org||'')}'/></div>
     <div class='profile-field'><label>段位・級位</label><select id='obGrade'>${gradeOptions(v.grade||'')}</select></div>
@@ -1383,6 +1475,35 @@ async function obCreateTeam(name){
     scheduleShare();return true;
   }catch(e){return false;}
 }
+/* 初回ログイン時の同意。同意しない限りアプリは使えない。 */
+async function handleConsent(act){
+  if(act==='back'){obStep=0;obMsg='';renderOnboard();return;}
+  if(act==='decline'){obStep='declined';obMsg='';renderOnboard();return;}
+  if(act!=='agree')return;
+  consent={agreed:true,at:Date.now(),v:1};
+  if(members[myId])members[myId].consent=consent;
+  if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({consent:consent,updated:Date.now()},{merge:true});}catch(e){}}
+  consentDone=true;scheduleShare();
+  const needOnboard=!(members[myId]&&members[myId].onboarded)&&!obDone;
+  if(needOnboard){obStep=1;obMsg='';renderOnboard();}
+  else{obDone=true;const g=document.getElementById('onboardOverlay');if(g){g.style.display='none';g.innerHTML='';}}
+}
+async function withdrawConsent(){
+  if(!confirm('共有への同意を撤回しますか？撤回すると、このアプリは使えなくなります。'))return;
+  consent={agreed:false,at:Date.now(),v:1};
+  if(members[myId])members[myId].consent=consent;
+  if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({consent:consent,updated:Date.now()},{merge:true});}catch(e){}}
+  consentDone=false;obDone=false;obStep=0;
+  setPage('rec');checkOnboarding();
+}
+async function deleteMyData(){
+  if(!confirm('自分のデータを削除しますか？\n記録・プロフィール・チームへの参加が Firebase から削除され、この端末の記録も消えます。自分が作ったチームは残ります。'))return;
+  if(!confirm('本当に削除しますか？この操作は取り消せません。'))return;
+  try{if(dbCap&&myId)await dbCap.doc('members/'+myId).delete();}catch(e){}
+  clearLocalUserData();
+  try{await firebase.auth().signOut();}catch(e){}
+  location.reload();
+}
 async function finishOnboarding(){
   const v=obProfileValues();
   const u=authUser();
@@ -1396,7 +1517,9 @@ async function finishOnboarding(){
     if(!await obCreateTeam(v.teamName)){obMsg='チームを作成できませんでした';obStep=2;renderOnboard();return;}
   }
   myName=name;
+  const oldIcon=profile.icon;
   profile={org:v.org.slice(0,30),grade:v.grade,years:v.years.slice(0,20),bio:v.bio.slice(0,200)};
+  if(v.icon)profile.icon=v.icon;else if(oldIcon)profile.icon=oldIcon;
   saveLocalTeams();
   if(dbCap&&myId){
     try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,onboarded:true,updated:Date.now()},{merge:true});}catch(e){}
@@ -1409,7 +1532,9 @@ async function skipOnboarding(){
   /* 入力済みのプロフィールだけ残し、設定済みの印をつけて閉じる */
   const v=obProfileValues();
   if(v.name)myName=v.name.slice(0,20);
+  const oldIcon2=profile.icon;
   profile={org:v.org.slice(0,30),grade:v.grade,years:v.years.slice(0,20),bio:v.bio.slice(0,200)};
+  if(v.icon)profile.icon=v.icon;else if(oldIcon2)profile.icon=oldIcon2;
   saveLocalTeams();
   if(dbCap&&myId){
     try{await dbCap.doc('members/'+myId).set({profile:profile,name:myName,onboarded:true,updated:Date.now()},{merge:true});}catch(e){}
@@ -1430,8 +1555,8 @@ function shareCard(){
   <div class='sess-row' style='margin-top:8px'><button class='pri' data-fb-act='save'>Firebaseに接続する</button></div>
   ${firebaseStatus?`<p class='hint-text'><b>${esc(firebaseStatus)}</b></p>`:''}
   <p class='hint-text' style='text-align:left'>手順：① console.firebase.google.com でプロジェクト作成（場所：asia-northeast1）②「Firestore Database」を作成 ③「Authentication → ログイン方法」で匿名を有効化 ④「プロジェクトの設定 → マイアプリ → ウェブアプリ」で config をコピー ⑤ Firestoreの「ルール」に firestore.rules を貼って公開する。</p></div>`;
-  const btns=[['off','共有しない'],['match','🏆 試合のみ'],['all','すべて共有']].map(([v,l])=>`<button class='${shareMode===v?'active':''}' data-share='${v}'>${l}</button>`).join('');
-  return `<div class='card'><h2>👥 メンバーと共有</h2><div class='btn-group tabs'>${btns}</div><p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}共有をオンにすると、このページを開けるメンバー全員が、あなたの記録（日付・練習/試合・メモ・矢所）を見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p><div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
+  const btns=[['match','🏆 試合のみ'],['all','すべて共有']].map(([v,l])=>`<button class='${shareMode===v?'active':''}' data-share='${v}'>${l}</button>`).join('');
+  return `<div class='card'><h2>👥 メンバーと共有</h2><div class='btn-group tabs'>${btns}</div><p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p><div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
 }
 function renderStats(){
   const pg=document.body.dataset.pg;
@@ -1466,14 +1591,26 @@ document.getElementById('menuClose').addEventListener('click',closeMenu);
 document.getElementById('menuDrawer').addEventListener('click',e=>{
   const b=e.target.closest('button[data-menu]');if(!b)return;
   const m=b.dataset.menu;closeMenu();
-  if(m==='logout'){if(confirm('ログアウトしますか？記録はこの端末に残ります。'))logoutGoogle();return;}
+  if(m==='logout'){if(confirm('ログアウトしますか？記録は Firebase に保存されています。'))logoutGoogle();return;}
   setPage(m);
 });
 document.getElementById('profilePage').addEventListener('click',e=>{
   const b=e.target.closest('button[data-pf-act]');if(!b)return;
   if(b.dataset.pfAct==='save')saveProfile();
+  else if(b.dataset.pfAct==='withdraw')withdrawConsent();
+  else if(b.dataset.pfAct==='deleteData')deleteMyData();
+  else if(b.dataset.pfAct==='showConsent'){obStep=0;obMsg='';renderOnboard();}
+  else if(b.dataset.pfAct==='removeIcon'){delete profile.icon;saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
+});
+document.getElementById('profilePage').addEventListener('change',e=>{
+  const f=e.target.closest('input[type=file]#pfIconFile');
+  if(f&&f.files&&f.files[0])handleIconFile(f.files[0],'profile');
 });
 document.getElementById('onboardOverlay').addEventListener('click',async e=>{
+  const cb=e.target.closest('button[data-consent]');
+  if(cb){handleConsent(cb.dataset.consent);return;}
+  const ab=e.target.closest('button[data-auth-act]');
+  if(ab){authBarClick(e);return;}
   const ch=e.target.closest('button[data-ob-choice]');
   if(ch){obProfile=obProfileValues();obChoice=ch.dataset.obChoice;obMsg='';renderOnboard();return;}
   const b=e.target.closest('button[data-ob]');if(!b)return;
@@ -1494,6 +1631,10 @@ document.getElementById('onboardOverlay').addEventListener('click',async e=>{
     return;
   }
   if(act==='finish'){finishOnboarding();return;}
+});
+document.getElementById('onboardOverlay').addEventListener('change',e=>{
+  const f=e.target.closest('input[type=file]#obIconFile');
+  if(f&&f.files&&f.files[0])handleIconFile(f.files[0],'onboard');
 });
 document.getElementById('authBar').addEventListener('click',authBarClick);
 document.getElementById('loginGate').addEventListener('click',authBarClick);
