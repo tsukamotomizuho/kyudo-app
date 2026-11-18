@@ -75,9 +75,9 @@ input[type=date],input[type=text]{font:inherit;font-size:.9rem;padding:7px 8px;b
 .auth-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin:-2px 2px 10px}
 .auth-bar button{padding:4px 10px;font-size:.8rem}
 .login-gate{position:fixed;inset:0;z-index:50;display:none;align-items:flex-start;justify-content:center;padding:18vh 16px 16px;background:rgba(244,241,234,.97);overflow:auto}
-.pg-trend,.pg-rank,.pg-profile{display:none}
-body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank,body[data-pg=profile] .pg-profile{display:block}
-body[data-pg=trend] .pg-rec,body[data-pg=rank] .pg-rec,body[data-pg=profile] .pg-rec{display:none}
+.pg-trend,.pg-rank,.pg-profile,.pg-team{display:none}
+body[data-pg=trend] .pg-trend,body[data-pg=rank] .pg-rank,body[data-pg=profile] .pg-profile,body[data-pg=team] .pg-team{display:block}
+body[data-pg=trend] .pg-rec,body[data-pg=rank] .pg-rec,body[data-pg=profile] .pg-rec,body[data-pg=team] .pg-rec{display:none}
 .menu-btn{flex:0 0 auto;font-size:1.25rem;line-height:1;padding:8px 12px;border-radius:8px}
 .menu-drawer{position:fixed;top:12px;right:12px;z-index:70;display:none;width:230px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:8px}
 .menu-drawer button{display:block;width:100%;text-align:left;padding:10px 12px;font-size:.95rem;border:none;background:none;color:var(--text)}
@@ -124,10 +124,11 @@ input[type=file]{display:none}
   </header>
   <div id='menuDrawer' class='menu-drawer' style='display:none'>
     <div class='menu-head'><span>メニュー</span><button id='menuClose' style='width:auto;padding:4px 8px'>✕</button></div>
+    <button data-menu='profile'>👤 プロフィール</button>
+    <button data-menu='team'>🏷 チーム</button>
     <button data-menu='rec'>📝 記録</button>
     <button data-menu='trend'>📈 推移</button>
     <button data-menu='rank'>🏅 ランキング</button>
-    <button data-menu='profile'>👤 プロフィール</button>
     <button data-menu='logout'>🚪 ログアウト</button>
   </div>
 
@@ -142,6 +143,7 @@ input[type=file]{display:none}
   <div class='pg-trend' id='trendPage'></div>
   <div class='pg-rank' id='rankPage'></div>
   <div class='pg-profile' id='profilePage'></div>
+  <div class='pg-team' id='teamPage'></div>
   <div class='login-gate' id='onboardOverlay' style='display:none;z-index:60'></div>
 
   <div class="card">
@@ -629,7 +631,7 @@ const SORTS=[['rate','的中率順'],['hits','的中本数順']];
 function tabs(key,items){return items.map(([v,l])=>`<button class='${st[key]===v?'active':''}' data-k='${key}' data-v='${v}'>${l}</button>`).join('');}
 function applyHash(){
   const h=location.hash.replace('#','');
-  const p=(h==='trend'||h==='rank'||h==='profile')?h:'rec';
+  const p=(h==='trend'||h==='rank'||h==='profile'||h==='team')?h:'rec';
   document.body.dataset.pg=p;
   if(p==='rank')st.member='';
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.pg===p));
@@ -1016,17 +1018,30 @@ function allSessionsOf(uid){
   if(!m||!Array.isArray(m.sessions))return [];
   return m.sessions.map(x=>({id:x.id,date:x.d,type:x.t,title:x.ti||'',shots:(x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]}))}));
 }
+/* チーム tid のメンバーID一覧（'all' は共有中の全員）。自分は常に含む。 */
 function teamNow(){return (st.team&&(st.team==='all'||myTeams.includes(st.team)))?st.team:(myTeams[0]||'all');}
-function participants(){
-  const t=teamNow(),ids=[myId||'me'];
+function teamMemberIds(tid){
+  const ids=[myId||'me'];
   Object.keys(members).forEach(id=>{
     if(id===myId)return;
     const m=members[id];
     if(!m||!Array.isArray(m.sessions))return;
-    if(t!=='all'&&!(Array.isArray(m.teams)&&m.teams.includes(t)))return;
+    if(tid!=='all'&&!(Array.isArray(m.teams)&&m.teams.includes(tid)))return;
     ids.push(id);
   });
   return ids;
+}
+function participants(){return teamMemberIds(teamNow());}
+/* 指定メンバーの順位行（期間 sel・種類 st.type で集計し、並び順でソート） */
+function rankRowsFor(ids,per,sel){
+  const rows=ids.map(id=>({id,b:bucketsOf(allSessionsOf(id),per,st.type).find(x=>x.key===sel)})).filter(r=>r.b);
+  const rk=r=>r.b.h/r.b.n;
+  rows.sort((a,b)=>st.sort==='rate'?((b.b.n>=4)-(a.b.n>=4))||rk(b)-rk(a)||b.b.h-a.b.h:b.b.h-a.b.h||rk(b)-rk(a));
+  return rows;
+}
+function rankRowHtml(r,i,nm){
+  const medals=['🥇','🥈','🥉'];
+  return `<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`;
 }
 /* ---- チーム ---- */
 async function loadTeams(){
@@ -1104,7 +1119,7 @@ function teamCard(){
     }).join('');
     const roster=(t!=='all'?(localRoster[t]||[]):[]).map(m=>`<div class='sess-item'><div><b>${esc(m.name)}</b><div class='vtag'>記録なし（まだ共有されていません）</div></div><button class='danger' data-remove-member='${m.id}'>削除</button></div>`).join('');
     return `<div class='card'><h2>🏷 チーム</h2>
-    <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
+    <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
     ${list||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。作成するか、招待コードで参加してください。</p>"}
     <div class='sess-row' style='margin-top:8px'><input type='text' id='teamName' placeholder='チーム名（例：○○高校弓道部）' maxlength='30' style='flex:1;min-width:0'/><button class='pri' data-team-act='create'>作成</button></div>
     <div class='sess-row'><input type='text' id='teamCode' placeholder='招待コード（6文字）' maxlength='8' style='flex:1;min-width:0;text-transform:uppercase'/><button class='pri' data-team-act='join'>参加</button></div>
@@ -1119,7 +1134,7 @@ function teamCard(){
     return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>メンバー ${ms.length}人　招待コード：<b>${esc(ti.code||'')}</b>${ms.length?'<br>'+esc(ms.join('、')):''}</div></div><button class='danger' data-leave='${id}'>退出</button></div>`;
   }).join('');
   return `<div class='card'><h2>🏷 チーム</h2>
-  <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
+  <div class='sess-row'><span style='font-size:.82rem'>あなたの名前：</span><input type='text' id='myNameInput' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(myName)}' style='flex:1;min-width:0'/><button data-team-act='saveName'>保存</button></div>
   ${list||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。作成するか、招待コードで参加してください。</p>"}
   <div class='sess-row' style='margin-top:8px'><input type='text' id='teamName' placeholder='チーム名（例：○○高校弓道部）' maxlength='30' style='flex:1;min-width:0'/><button class='pri' data-team-act='create'>作成</button></div>
   <div class='sess-row'><input type='text' id='teamCode' placeholder='招待コード（6文字）' maxlength='8' style='flex:1;min-width:0;text-transform:uppercase'/><button class='pri' data-team-act='join'>参加</button></div>
@@ -1203,20 +1218,37 @@ async function rankBody(){
   const rosterList=rosterIds.flatMap(tid=>(localRoster[tid]||[]).map(m=>({tid:tid,m:m})));
   const rosterRows=rosterList.map(x=>`<div class='rank-row'><div class='rank-no'>—</div><div class='rank-main'>${esc(x.m.name)}<div class='vtag'>${esc((teamInfo[x.tid]&&teamInfo[x.tid].name)||'チーム')}　記録なし</div></div><div class='rank-val'>—<div class='vtag'>名簿のみ</div></div></div>`).join('');
   const rosterBlock=rosterRows?`<h2 style='margin:14px 0 4px'>👥 チーム名簿（記録なし）</h2>`+rosterRows:'';
-  if(!keys.length)return teamSel+sortTabs+`<p class='hint-text'>該当する記録がありません。下の「🏷 チーム」でチームを作り、名簿に部員を追加できます。</p>`+rosterBlock;
+  if(!keys.length)return teamSel+sortTabs+`<p class='hint-text'>該当する記録がありません。メニュー →「チーム」でチームを作り、名簿に部員を追加できます。</p>`+rosterBlock;
   const sel=keys.includes(st.sel)?st.sel:keys[0];
-  const nm=await names(ids);
-  const rows=ids.map(id=>({id,b:bucketsOf(allSessionsOf(id),per,st.type).find(x=>x.key===sel)})).filter(r=>r.b);
-  const rk=r=>r.b.h/r.b.n;
-  rows.sort((a,b)=>st.sort==='rate'?((b.b.n>=4)-(a.b.n>=4))||rk(b)-rk(a)||b.b.h-a.b.h:b.b.h-a.b.h||rk(b)-rk(a));
-  const medals=['🥇','🥈','🥉'];
+  const nm=await names(teamMemberIds('all'));
+  const rows=rankRowsFor(ids,per,sel);
   const tot=rows.reduce((a,r)=>({n:a.n+r.b.n,h:a.h+r.b.h,kai:a.kai+r.b.kai}),{n:0,h:0,kai:0});
-  const list=rows.map((r,i)=>`<div class='rank-row${(r.id===myId||r.id==='me')?' mine':''}' data-uid='${r.id}'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(nm[r.id])}<div class='bar-track'><div class='bar-fill' style='width:${pct(r.b)}%'></div></div><div class='vtag'>${r.b.h}/${r.b.n}本${r.b.kai?`　皆中 ${r.b.kai}回`:''}${st.sort==='rate'&&r.b.n<4?'　（参考：4本未満）':''}</div></div><div class='rank-val'>${pct(r.b)}%<div class='vtag'>記録を見る ›</div></div></div>`).join('');
-  const note=ids.length<2?`<p class='hint-text'>${t==='all'?'共有しているメンバーがまだいません。':'このチームで記録を共有しているメンバーがまだいません。'}${isAdmin()?'下の「メンバーと共有」をオンにして、仲間にも共有してもらいましょう。':''}</p>`:`<p class='hint-text'>${ids.length}人で比較中（タップでその人の記録を表示）</p>`;
+  const list=rows.map((r,i)=>rankRowHtml(r,i,nm)).join('');
+  const note=ids.length<2?`<p class='hint-text'>${t==='all'?'共有しているメンバーがまだいません。':'このチームで記録を共有しているメンバーがまだいません。'}${isAdmin()?'チーム画面の「メンバーと共有」をオンにして、仲間にも共有してもらいましょう。':''}</p>`:`<p class='hint-text'>${ids.length}人で比較中（タップでその人の記録を表示）</p>`;
+  /* 所属チームごとのランキング（各チームのメンバー順位） */
+  const teamBlocks=myTeams.map(tid=>{
+    const tn=(teamInfo[tid]&&teamInfo[tid].name)||'チーム';
+    const trows=rankRowsFor(teamMemberIds(tid),per,sel);
+    return `<h2 style='margin:14px 0 4px'>🏷 ${esc(tn)}</h2>`+(trows.length?trows.map((r,i)=>rankRowHtml(r,i,nm)).join(''):`<p class='hint-text'>この期間の記録がありません</p>`);
+  }).join('');
+  /* 団体ランキング（チーム同士を平均的中率で比較） */
+  const medals=['🥇','🥈','🥉'];
+  const trank=myTeams.map(tid=>{
+    let n=0,h=0,kai=0;
+    teamMemberIds(tid).forEach(id=>{const b=bucketsOf(allSessionsOf(id),per,st.type).find(x=>x.key===sel);if(b){n+=b.n;h+=b.h;kai+=b.kai;}});
+    return {tid,n,h,kai};
+  }).filter(x=>x.n>0).sort((a,b)=>(b.h/b.n)-(a.h/a.n)||b.h-a.h);
+  const teamRankBlock=trank.length?trank.map((x,i)=>{
+    const tn=(teamInfo[x.tid]&&teamInfo[x.tid].name)||'チーム';
+    return `<div class='rank-row'><div class='rank-no'>${medals[i]||(i+1)+'位'}</div><div class='rank-main'>${esc(tn)}<div class='bar-track'><div class='bar-fill' style='width:${Math.round(x.h/x.n*100)}%'></div></div><div class='vtag'>${x.h}/${x.n}本　皆中 ${x.kai}回</div></div><div class='rank-val'>${Math.round(x.h/x.n*100)}%</div></div>`;
+  }).join(''):'';
   const bestRows=bucketsOf(store.sessions,per,st.type).filter(b=>b.n>=4).sort((a,b)=>b.h/b.n-a.h/a.n||b.h-a.h).slice(0,5)
     .map((b,i)=>`<div class='rank-row'><div class='rank-no'>${i+1}位</div><div class='rank-main'>${bucketLabel(b.key,per)}</div><div class='rank-val'>${pct(b)}%<div class='vtag'>${b.h}/${b.n}</div></div></div>`).join('');
   return teamSel+sortTabs+`<div class='sess-row'><span style='font-size:.82rem'>対象期間：</span><select data-k='sel'>${keys.map(k=>`<option value='${k}' ${k===sel?'selected':''}>${bucketLabel(k,per)}</option>`).join('')}</select></div>`
-    +`<div class='diag-summary'>${esc(tname)}　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回／${rows.length}人</div>`+list+rosterBlock+note+(bestRows?`<h2 style='margin:14px 0 4px'>🥇 自分のベスト期間</h2>`+bestRows:'');
+    +`<div class='diag-summary'>${esc(tname)}　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回／${rows.length}人</div>`+list+rosterBlock+note
+    +(myTeams.length?`<h2 style='margin:14px 0 4px'>👥 所属チームのランキング</h2>`+teamBlocks:'')
+    +(teamRankBlock?`<h2 style='margin:14px 0 4px'>🏆 団体ランキング</h2>`+teamRankBlock:'')
+    +(bestRows?`<h2 style='margin:14px 0 4px'>🥇 自分のベスト期間</h2>`+bestRows:'');
 }
 async function memberBody(uid){
   const per=st.per,isMe=(uid===myId||uid==='me');
@@ -1255,7 +1287,7 @@ function renderProfilePage(){
   const teams=myTeams.map(id=>{const ti=teamInfo[id]||{};return `<div class='sess-item'><div><b>${esc(ti.name||'チーム')}</b><div class='vtag'>招待コード：<b>${esc(ti.code||'')}</b></div></div></div>`;}).join('');
   el.innerHTML=`<div class='card'><h2>👤 プロフィール</h2>
   <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからいつでも変えられます。</p>
-  <div class='profile-field'><label>表示名（必須）</label><input type='text' id='pfName' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(name)}'/></div>
+  <div class='profile-field'><label>表示名（必須）</label><input type='text' id='pfName' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(name)}'/></div>
   <div class='profile-field'><label>所属</label><input type='text' id='pfOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(org)}'/></div>
   <div class='profile-field'><label>段位・級位</label><select id='pfGrade'>${gradeOptions(grade)}</select></div>
   <div class='profile-field'><label>弓歴</label><input type='text' id='pfYears' placeholder='例：3年目' maxlength='20' value='${esc(years)}'/></div>
@@ -1264,7 +1296,7 @@ function renderProfilePage(){
   ${profileMsg?`<p class='hint-text'><b>${esc(profileMsg)}</b></p>`:''}
   <h2 style='margin:14px 0 4px'>🏷 所属チーム</h2>
   ${teams||"<p class='hint-text' style='text-align:left'>まだチームに所属していません。チームの参加・作成はランキングページでできます。</p>"}
-  <p class='hint-text' style='text-align:left'>チームの参加・作成・退出はランキングページの「🏷 チーム」でできます。</p></div>`;
+  <p class='hint-text' style='text-align:left'>チームの参加・作成・退出はメニュー →「チーム」でできます。</p></div>`;
 }
 async function saveProfile(){
   const v=id=>{const x=document.getElementById(id);return x?x.value.trim():'';};
@@ -1305,7 +1337,7 @@ function renderOnboard(){
   if(obStep===1){
     body=`<h2>👤 プロフィールを設定</h2>
     <p class='hint-text' style='text-align:left'>仲間に表示されるプロフィールです。あとからメニュー →「プロフィール」で変えられます。</p>
-    <div class='profile-field'><label>表示名（必須）</label><input type='text' id='obName' placeholder='表示名（例：瑞穂）' maxlength='20' value='${esc(v.name||defName)}'/></div>
+    <div class='profile-field'><label>表示名（必須）</label><input type='text' id='obName' placeholder='表示名（例：弓道太郎）' maxlength='20' value='${esc(v.name||defName)}'/></div>
     <div class='profile-field'><label>所属</label><input type='text' id='obOrg' placeholder='学校・道場・部活名' maxlength='30' value='${esc(v.org||'')}'/></div>
     <div class='profile-field'><label>段位・級位</label><select id='obGrade'>${gradeOptions(v.grade||'')}</select></div>
     <div class='profile-field'><label>弓歴</label><input type='text' id='obYears' placeholder='例：3年目' maxlength='20' value='${esc(v.years||'')}'/></div>
@@ -1403,7 +1435,16 @@ function shareCard(){
 }
 function renderStats(){
   const pg=document.body.dataset.pg;
-  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();else if(pg==='profile')renderProfilePage();
+  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();else if(pg==='profile')renderProfilePage();else if(pg==='team')renderTeamPage();
+}
+function renderTeamPage(){
+  const el=document.getElementById('teamPage');if(!el)return;
+  const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
+  const act=document.activeElement&&document.activeElement.id;
+  const keep={teamName:val('teamName'),teamCode:val('teamCode'),memberName:val('memberName'),myNameInput:val('myNameInput'),fbConfigInput:val('fbConfigInput')};
+  el.innerHTML=teamCard()+shareCard();
+  ['teamName','teamCode','memberName','myNameInput','fbConfigInput'].forEach(id=>{const x=document.getElementById(id);if(x&&keep[id])x.value=keep[id];});
+  if(act==='teamName'||act==='teamCode'||act==='memberName'){const x=document.getElementById(act);if(x)x.focus();}
 }
 function renderTrendPage(){
   document.getElementById('trendPage').innerHTML=`<div class='card'><h2>📈 的中推移</h2><div class='btn-group tabs'>${tabs('per',PERS)}</div><div class='btn-group tabs' style='margin:8px 0 10px'>${tabs('type',TYPES)}</div>${trendBody()}</div>`;
@@ -1415,12 +1456,7 @@ async function renderRankPage(){
   try{body=st.member?await memberBody(st.member):await rankBody();}
   catch(e){body="<p class='hint-text'>表示中にエラーが発生しました</p>";}
   if(tok!==rtok)return;
-  const val=id=>{const x=document.getElementById(id);return x?x.value:'';};
-  const act=document.activeElement&&document.activeElement.id;
-  const keep={teamName:val('teamName'),teamCode:val('teamCode'),memberName:val('memberName'),myNameInput:val('myNameInput'),fbConfigInput:val('fbConfigInput')};
-  el.innerHTML=head+body+'</div>'+teamCard()+shareCard();
-  ['teamName','teamCode','memberName','myNameInput','fbConfigInput'].forEach(id=>{const x=document.getElementById(id);if(x&&keep[id])x.value=keep[id];});
-  if(act==='teamName'||act==='teamCode'||act==='memberName'){const x=document.getElementById(act);if(x)x.focus();}
+  el.innerHTML=head+body+'</div>';
 }
 
 document.getElementById('nav').addEventListener('click',e=>{const b=e.target.closest('button[data-pg]');if(b)setPage(b.dataset.pg);});
@@ -1461,7 +1497,7 @@ document.getElementById('onboardOverlay').addEventListener('click',async e=>{
 });
 document.getElementById('authBar').addEventListener('click',authBarClick);
 document.getElementById('loginGate').addEventListener('click',authBarClick);
-['trendPage','rankPage'].forEach(id=>{
+['trendPage','rankPage','teamPage'].forEach(id=>{
   const tp=document.getElementById(id);
   tp.addEventListener('click',e=>{
     const b=e.target.closest('button[data-k]');if(b){setStat(b.dataset.k,b.dataset.v);return;}
