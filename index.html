@@ -658,7 +658,7 @@ function aiTeamSummary(){
     return '自分の的中率 '+mine.p+'%（'+mine.h+'/'+mine.n+'本）。チームの他のメンバー合計 '+others.h+'/'+others.n+'本（'+others.p+'%）';
   }catch(e){return '';}
 }
-function buildAiPrompt(){
+function buildAiPrompt(withFrames){
   const d=lastDiag||{};
   const scopeLabel=d.scope==='recent'?'直近4本':(d.scope==='total'?'通算':'この回');
   const checked=(diagChecked||[]).map(i=>d.checks&&d.checks[i]?d.checks[i].q:'').filter(Boolean);
@@ -669,13 +669,15 @@ function buildAiPrompt(){
     '【的中率の推移】'+aiTrendSummary(),
     '【チーム比較】'+(aiTeamSummary()||'なし'),
     '【直近の矢所】'+JSON.stringify(recent)+'（x,yは的中心からの相対座標で-1〜1、h=1が的中）',
-    '【指示】診断と推移を突き合わせて、(1)まとめ (2)原因の絞り込み (3)練習のポイントを、合わせて300字程度の日本語で返してください。断定は避け「可能性があります」等の表現を使い、医療的な助言はしないでください。'
   ];
+  /* 静止画付きのときは、射形についてもコメントするよう1節を追加する */
+  if(withFrames)lines.push('【射形の静止画】この後に添付する4枚の静止画は、射形動画から切り出したもので、構え・引分け・離れ・残心の順です。診断結果と合わせて、姿勢・引分け・離れ・残心についてもコメントしてください。');
+  lines.push('【指示】診断と推移を突き合わせて、(1)まとめ (2)原因の絞り込み (3)練習のポイントを、合わせて300字程度の日本語で返してください。断定は避け「可能性があります」等の表現を使い、医療的な助言はしないでください。');
   return lines.join('\n');
 }
-async function callGemini(prompt){
-  if(typeof window.__aiGenerate==='function')return await window.__aiGenerate(prompt);
-  if(typeof window.__geminiGenerate==='function')return await window.__geminiGenerate(prompt);
+async function callGemini(prompt,images){
+  if(typeof window.__aiGenerate==='function')return await window.__aiGenerate(prompt,images);
+  if(typeof window.__geminiGenerate==='function')return await window.__geminiGenerate(prompt,images);
   const e=new Error('ai-not-configured');e.code='ai-not-configured';throw e;
 }
 function aiErrorMessage(e){
@@ -686,6 +688,79 @@ function aiErrorMessage(e){
   if(c==='failed-precondition'||c==='permission-denied'||/API has not been used|not enabled|PERMISSION_DENIED/i.test(m))return 'AIの利用設定がまだ完了していません。READMEの手順で Firebase コンソールの設定を確認してください。';
   if(/network|fetch|Failed to fetch/i.test(m))return '通信に失敗しました。時間をおいて再度お試しください。';
   return 'AI分析に失敗しました。時間をおいて再度お試しください。';
+}
+/* 動画から静止画を切り出す（AI分析用）。source は Blob または object URL。
+   再生時間の 0.05/0.35/0.65/0.95 あたりのフレームを JPEG base64（data: なし）で返す。
+   動画そのものは送らない。失敗したら [] を返す（例外は投げない）。 */
+async function extractVideoFrames(source,count){
+  count=count||4;
+  if(!source)return [];
+  let url=null,own=false;
+  try{
+    if(typeof Blob!=='undefined'&&source instanceof Blob){url=URL.createObjectURL(source);own=true;}
+    else if(typeof source==='string'&&source){url=source;}
+    else return [];
+    const video=document.createElement('video');
+    video.muted=true;video.playsInline=true;video.preload='auto';video.style.display='none';
+    document.body.appendChild(video);
+    /* 1つのイベントを最大5秒待つ（シークのタイムアウト用） */
+    const waitEv=(ev)=>new Promise((res,rej)=>{
+      const t=setTimeout(()=>{cleanup();rej(new Error('timeout'));},5000);
+      function cleanup(){clearTimeout(t);video.removeEventListener(ev,onEv);video.removeEventListener('error',onErr);}
+      function onEv(){cleanup();res();}
+      function onErr(){cleanup();rej(new Error('video error'));}
+      video.addEventListener(ev,onEv);video.addEventListener('error',onErr);
+    });
+    try{
+      video.src=url;
+      await waitEv('loadedmetadata');
+      const dur=video.duration;
+      if(!dur||!Number.isFinite(dur)||dur<=0)return [];
+      const canvas=document.createElement('canvas');
+      const ctx=canvas.getContext('2d');
+      if(!ctx)return [];
+      const out=[];
+      for(let i=0;i<count;i++){
+        const f=count===1?0.5:(0.05+0.9*i/(count-1));
+        try{video.currentTime=Math.min(Math.max(dur*f,0),Math.max(dur-0.05,0));await waitEv('seeked');}catch(e){continue;}
+        const w=video.videoWidth,h=video.videoHeight;
+        if(!w||!h)continue;
+        const sw=Math.min(w,640),sh=Math.max(1,Math.round(h*sw/w));
+        canvas.width=sw;canvas.height=sh;
+        ctx.drawImage(video,0,0,sw,sh);
+        const b64=(canvas.toDataURL('image/jpeg',0.8).split(',')[1]||'');
+        if(b64)out.push(b64);
+      }
+      return out;
+    }finally{
+      try{video.pause();}catch(e){}
+      try{video.removeAttribute('src');video.load();}catch(e){}
+      try{video.remove();}catch(e){}
+      if(own){try{URL.revokeObjectURL(url);}catch(e){}}
+    }
+  }catch(e){return [];}
+}
+/* 診断対象の射のうち、動画付きの最新の1本から静止画を集める。
+   動画そのものは送らず、静止画（最大4枚）だけを返す。失敗時は空を返す。 */
+async function collectAiFrames(){
+  try{
+    const pool=(store.sessions||[]).flatMap(x=>x.shots||[]);
+    const scope=lastDiag?lastDiag.scope:diagScope;
+    const ts=scope==='total'?pool:(scope==='recent'?(shots||[]).slice(-4):(shots||[]));
+    let target=null;
+    for(let i=ts.length-1;i>=0;i--){if(ts[i]&&ts[i].videoName){target=ts[i];break;}}
+    if(!target)return {shotId:null,frames:[]};
+    let src=videoUrlMap[target.id]||null;
+    if(!src){
+      let blob=null;
+      try{blob=await dbTx('readonly',s=>s.get(target.id));}catch(e){blob=null;}
+      if(!blob)return {shotId:null,frames:[]};
+      src=blob;
+    }
+    const frames=await extractVideoFrames(src,4);
+    if(!frames||!frames.length)return {shotId:null,frames:[]};
+    return {shotId:target.id,frames:frames};
+  }catch(e){return {shotId:null,frames:[]};}
 }
 async function runAiAnalysis(){
   if(aiBusy)return;
@@ -704,8 +779,11 @@ async function runAiAnalysis(){
   }
   aiBusy=true;aiCurrentNote='AIが分析しています…';aiCurrentText='';aiLastError=null;renderAiBox();
   try{
-    const prompt=buildAiPrompt();
-    const text=await callGemini(prompt);
+    /* 診断対象の射に動画があれば、その静止画も AI に送る（動画そのものは送らない） */
+    const aiFrames=await collectAiFrames();
+    const images=(aiFrames&&aiFrames.frames)||[];
+    const prompt=buildAiPrompt(images.length>0);
+    const text=await callGemini(prompt,images);
     const t=String(text||'').trim();
     if(!t)throw new Error('empty');
     aiCurrentText=t;aiCurrentNote='';
@@ -729,7 +807,7 @@ function renderAiBox(){
   }).join('');
   box.innerHTML=`<div style='margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)'>
     <div class='sess-row'><span style='font-size:.88rem;font-weight:bold'>🤖 AI分析</span><button class='pri' id='aiBtn' onclick='runAiAnalysis()' ${aiBusy?'disabled':''}>AI分析する</button></div>
-    <p class='hint-text' style='text-align:left'>診断結果と的中率の推移をAIが分析します。1日1回まで。名前・メールは送られません。</p>
+    <p class='hint-text' style='text-align:left'>診断結果と的中率の推移をAIが分析します。1日1回まで。名前・メールは送られません。動画がついている射がある場合、その静止画も分析に使います。</p>
     ${aiSubscriptionActive()?'':aiPaywallHtml()}
     ${aiCurrentNote?`<p class='hint-text' style='text-align:left'><b>${esc(aiCurrentNote)}</b></p>`:''}
     ${aiLastError?`<p class='hint-text' style='text-align:left;font-size:.75rem'>エラー詳細：${esc(aiLastError.code?aiLastError.code+'：':'')}${esc(aiLastError.message)}</p>`:''}
@@ -2321,11 +2399,13 @@ async function saveProfile(){
 }
 
 /* ---- 初回ログイン時のオンボーディング ---- */
+const CONSENT_VERSION=2; /* 同意の版。v2 で動画の静止画を AI に送る文言を追加 */
 let obStep=1,obChoice='',obMsg='',obDone=false,obProfile={},consentDone=false;
 function checkOnboarding(){
   const g=document.getElementById('onboardOverlay');if(!g)return;
   const u=authUser();
-  const hasConsent=!!(members[myId]&&members[myId].consent&&members[myId].consent.agreed);
+  /* v2 未満の同意では、静止画の文言に同意していないため同意画面をもう一度出す */
+  const hasConsent=!!(members[myId]&&members[myId].consent&&members[myId].consent.agreed&&(members[myId].consent.v||0)>=CONSENT_VERSION);
   const needConsent=!!dbCap&&membersFirst&&u&&!u.isAnonymous&&!hasConsent&&!consentDone;
   const needOnboard=!!dbCap&&membersFirst&&u&&!u.isAnonymous&&!(members[myId]&&members[myId].onboarded)&&!obDone;
   if(needConsent){obStep=0;obMsg='';renderOnboard();}
@@ -2355,6 +2435,7 @@ function renderOnboard(){
     <li>あなたの記録（日付・的中・矢所・練習／試合）とプロフィール（表示名・所属・段位・級位・弓歴・ひとこと）、アイコン画像、チーム名が、チームのメンバーやランキングで他の人に見られること。</li>
     <li>記録・プロフィールは Firebase（東京リージョン）に保存されること。動画（射形動画）はあなたの端末内にだけ保存され、Firebase には送られません。</li>
     <li>AI分析を使うときは、記録データ（矢所・的中率・診断結果）が Google の AI に送られること。名前・メールアドレス・ユーザーIDは送られません。AI分析の結果はあなたの端末内にだけ保存されます。</li>
+    <li>AI分析で動画を使うときは、動画から切り出した静止画を AI に送ること。動画そのものは送りません。</li>
     <li>Google アカウントのメールアドレスはログイン認証にだけ使い、他の人には表示されず、Firebase にも保存されません。</li>
     <li>自分のデータの削除を希望するときは、プロフィール画面の「自分のデータを削除する」からできます。</li>
     </ul>
@@ -2437,7 +2518,7 @@ async function handleConsent(act){
   if(act==='decline'){obStep='declined';obMsg='';renderOnboard();return;}
   if(act!=='agree')return;
   await clearTombstoneIfNeeded();
-  consent={agreed:true,at:Date.now(),v:1};
+  consent={agreed:true,at:Date.now(),v:CONSENT_VERSION};
   if(members[myId])members[myId].consent=consent;
   if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({consent:consent,updated:Date.now()},{merge:true});}catch(e){}}
   consentDone=true;scheduleShare();
@@ -2447,7 +2528,7 @@ async function handleConsent(act){
 }
 async function withdrawConsent(){
   if(!confirm('共有への同意を撤回しますか？撤回すると、このアプリは使えなくなります。'))return;
-  consent={agreed:false,at:Date.now(),v:1};
+  consent={agreed:false,at:Date.now(),v:CONSENT_VERSION};
   if(members[myId])members[myId].consent=consent;
   if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({consent:consent,updated:Date.now()},{merge:true});}catch(e){}}
   consentDone=false;obDone=false;obStep=0;
@@ -2570,7 +2651,7 @@ function renderLegalPage(){
   <h2 style='margin:14px 0 4px'>利用規約</h2>
   <p class='hint-text' style='text-align:left'>・AI分析は、記録データをもとにした参考情報です。指導者の助言に代わるものではありません。<br>・AI分析の結果は、的中を保証するものではありません。<br>・有料プラン（AI分析）は月額500円（税込）で、決済完了後すぐにご利用いただけます。解約はいつでもでき、解約後も次回更新日までご利用いただけます。日割り返金はありません。<br>・記録・推移・ランキング・チームなどの基本機能は、課金状態に関わらず無料でご利用いただけます。</p>
   <h2 style='margin:14px 0 4px'>プライバシーポリシー</h2>
-  <p class='hint-text' style='text-align:left'>・AI分析を使うとき、記録データ（矢所・的中率・診断結果）が Google の AI に送られます。名前・メールアドレス・ユーザーIDは送られません。<br>・AI分析の結果は、あなたの端末内にだけ保存されます。<br>・記録・プロフィールは Firebase に保存され、チームのメンバーに共有されます。動画は端末内にだけ保存され、Firebase には送られません。<br>・Google アカウントのメールアドレスはログイン認証にだけ使い、他の人には表示されず、Firebase にも保存されません。</p>
+  <p class='hint-text' style='text-align:left'>・AI分析を使うとき、記録データ（矢所・的中率・診断結果）が Google の AI に送られます。名前・メールアドレス・ユーザーIDは送られません。<br>・AI分析で動画を使うとき、動画から切り出した静止画が Google の AI に送られます。動画そのものは送られません。<br>・AI分析の結果は、あなたの端末内にだけ保存されます。<br>・記録・プロフィールは Firebase に保存され、チームのメンバーに共有されます。動画は端末内にだけ保存され、Firebase には送られません。<br>・Google アカウントのメールアドレスはログイン認証にだけ使い、他の人には表示されず、Firebase にも保存されません。</p>
   <div class='sess-row'><button onclick="setPage('rec')">記録に戻る</button></div></div>`;
 }
 function renderTeamPage(){
@@ -2747,8 +2828,14 @@ try{
     const aiApp=initializeApp(cfg,'ai');
     initializeAppCheck(aiApp,{provider:new ReCaptchaEnterpriseProvider(RECAPTCHA_ENTERPRISE_SITE_KEY),isTokenAutoRefreshEnabled:true});
     const ai=getAI(aiApp,{backend:new GoogleAIBackend(),useLimitedUseAppCheckTokens:true});
-    window.__geminiGenerate=async(prompt)=>{
+    window.__geminiGenerate=async(prompt,images)=>{
       const model=getGenerativeModel(ai,{model:AI_MODEL_MODULE});
+      /* 静止画付きのときは parts 配列で送る（動画そのものは送らない） */
+      if(images&&images.length){
+        const parts=[{text:prompt}].concat(images.map(b64=>({inlineData:{mimeType:'image/jpeg',data:b64}})));
+        const res=await model.generateContent(parts);
+        return res.response.text();
+      }
       const res=await model.generateContent(prompt);
       return res.response.text();
     };
