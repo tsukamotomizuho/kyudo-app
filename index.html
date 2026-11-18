@@ -133,6 +133,7 @@ input[type=file]{display:none}
     <button data-menu='rec'>📝 記録</button>
     <button data-menu='trend'>📈 推移</button>
     <button data-menu='rank'>🏅 ランキング</button>
+    <button data-menu='legal'>📜 特定商取引法・利用規約</button>
     <button data-menu='logout'>🚪 ログアウト</button>
   </div>
 
@@ -149,6 +150,7 @@ input[type=file]{display:none}
   <div class='pg-rank' id='rankPage'></div>
   <div class='pg-profile' id='profilePage'></div>
   <div class='pg-team' id='teamPage'></div>
+  <div class='pg-legal' id='legalPage'></div>
   <div class='login-gate' id='onboardOverlay' style='display:none;z-index:60'></div>
 
   <div class="card">
@@ -203,6 +205,7 @@ input[type=file]{display:none}
       </div>
     </div>
     <div id="diagContainer"></div>
+    <div id="aiBox"></div>
   </div>
 
   <div class="card">
@@ -510,11 +513,12 @@ function updateDiagnosis(){
   const spread=ts.reduce((a,b)=>a+Math.hypot(b.nx-avgX,b.ny-avgY),0)/n;
 
   const haya=ts.filter(s=>s.arrowType==='甲矢'), otoya=ts.filter(s=>s.arrowType==='乙矢');
-  let ho='';
+  let ho='',hoPlain='';
   if(haya.length&&otoya.length){
     const hX=haya.reduce((a,b)=>a+b.nx,0)/haya.length, oX=otoya.reduce((a,b)=>a+b.nx,0)/otoya.length;
     if(Math.abs(hX-oX)>=0.45){
       ho=`<div style="margin-top:6px;font-size:.8rem;color:#a569bd;">💡 <b>甲矢・乙矢の差：</b>甲矢は${hX>oX?'前(右)':'後ろ(左)'}、乙矢は${oX>hX?'前(右)':'後ろ(左)'}へ飛びやすい傾向があります（羽の回転方向や手の内の変化が影響しやすいです）。</div>`;
+      hoPlain='甲矢は'+(hX>oX?'前(右)':'後ろ(左)')+'、乙矢は'+(oX>hX?'前(右)':'後ろ(左)')+'へ飛びやすい傾向があります';
     }
   }
   const dp=[];
@@ -553,8 +557,151 @@ function updateDiagnosis(){
   }
   const ch=checks.map((x,i)=>`<li class="check-item" id="chkItem_${i}"><label><input type="checkbox" onchange="toggleCheck(${i},this.checked)" /><span>${x.q}</span></label><div class="check-advice">✅ <b>対策ポイント：</b>${x.a}</div></li>`).join('');
   c.innerHTML=`<div class="diag-summary"><span class="diag-tag ${good?'good':''}">${badge}</span><br>対象 ${n}本（的中 ${hitCount}本）の矢所を分析しました。${allHit&&!good?'<br><span style="color:#e0524f;">※すべて中っていますが、的の端に偏っているため大会や距離変化で外れやすいサインです。</span>':''}${ho}</div><div style="font-size:.82rem;font-weight:bold;color:var(--muted);">▼ 当てはまる項目にチェックして原因を絞り込む：</div><ul class="check-list">${ch}</ul>`;
+  /* AI版：診断結果を構造化して残す（AIへのプロンプト用）。判定バッジが
+     変わったときはチェック項目の意味も変わるため、チェックをリセットする。 */
+  if(!lastDiag||lastDiag.badge!==badge)diagChecked=[];
+  lastDiag={scope:diagScope,n:n,hit:hitCount,allHit:allHit,badge:badge,good:good,dirLabel:dirLabel,avgX:Math.round(avgX*100)/100,avgY:Math.round(avgY*100)/100,avgDist:Math.round(avgDist*100)/100,spread:Math.round(spread*100)/100,ho:hoPlain,checks:checks.map(x=>({q:x.q,a:x.a}))};
 }
-function toggleCheck(i,v){const el=document.getElementById('chkItem_'+i);if(el)el.classList.toggle('checked',v);}
+function toggleCheck(i,v){const el=document.getElementById('chkItem_'+i);if(el)el.classList.toggle('checked',v);if(v){if(!diagChecked.includes(i))diagChecked.push(i);}else{diagChecked=diagChecked.filter(x=>x!==i);}}
+
+/* ---- AI分析（AI版のみ） ---- */
+/* Firebase AI Logic（Gemini）で診断結果を分析する。実際の Gemini 呼び出しは
+   末尾のモジュールスクリプトが window.__geminiGenerate に設定する（App Check 付き）。
+   テスト用に window.__aiGenerate があればそちらを優先する。 */
+const AI_MODEL='gemini-3.5-flash-lite'; /* 軽量モデル。gemini-2.0-flash は 2026-06-01 に廃止のため使わない */
+const AI_LAST_KEY='kyudo_ai_last_date_v1';
+const AI_HIST_KEY='kyudo_ai_history_v1';
+const AI_HIST_MAX=10;
+
+/* ---- AI分析の有料プラン（月額500円・税込） ---- */
+/* 課金状態は Firestore の members ドキュメントの subscription フィールドで持つ
+   （{plan:'ai', status:'active', currentPeriodEnd:<ミリ秒>, stripeCustomerId:<id>}）。
+   サーバー（Stripe Webhook）が書く値なので、doShare / flushOldUserData /
+   shareFallbackOnce の書き込みペイロードには subscription を含めないこと。
+   adoptMembersDoc も subscription を消したり上書きしたりしない。
+   aiSubscriptionActive() は members[myId].subscription を都度読む。 */
+const STRIPE_CHECKOUT_URL=''; /* Stripe で作った決済リンク（Payment Links）またはサーバーの /create-checkout-session の URL を貼る */
+const STRIPE_PORTAL_URL=''; /* Stripe Billing Portal またはサーバーの /portal の URL を貼る */
+function aiSubscriptionActive(){
+  try{
+    const s=members&&myId&&members[myId]?members[myId].subscription:null;
+    return !!(s&&s.status==='active'&&typeof s.currentPeriodEnd==='number'&&s.currentPeriodEnd>Date.now());
+  }catch(e){return false;}
+}
+function aiPaywallHtml(){
+  const checkout=STRIPE_CHECKOUT_URL?`<div class='sess-row' style='margin-top:8px'><a href='${esc(STRIPE_CHECKOUT_URL)}' target='_blank' rel='noopener' class='pri' style='display:inline-block;text-decoration:none;padding:8px 14px;border-radius:8px'>月額500円（税込）でAI分析をはじめる</a></div>`:`<p class='hint-text' style='text-align:left'><b>決済リンクは準備中です</b></p>`;
+  const portal=STRIPE_PORTAL_URL?`<p class='hint-text' style='text-align:left'><a href='${esc(STRIPE_PORTAL_URL)}' target='_blank' rel='noopener'>プランの管理・解約はこちら</a></p>`:'';
+  return `<div class='diag-summary' style='white-space:pre-wrap'>AI分析は月額500円（税込）の有料プランです。決済するとすぐに使えます。</div>${checkout}${portal}<p class='hint-text' style='text-align:left'>すでに課金済みの方は、反映まで数分かかる場合があります。</p>`;
+}
+let lastDiag=null;      /* updateDiagnosis() が入れる構造化された診断結果 */
+let diagChecked=[];     /* ユーザーがチェックした原因項目の index */
+let aiCurrentText='',aiCurrentNote='',aiBusy=false,aiHistOpen=-1;
+function aiTodayStr(){return dstr(new Date());}
+function aiLastDate(){try{return localStorage.getItem(AI_LAST_KEY)||'';}catch(e){return '';}}
+function aiSetLastDate(d){try{localStorage.setItem(AI_LAST_KEY,d);}catch(e){}}
+function loadAiHistory(){try{const a=JSON.parse(localStorage.getItem(AI_HIST_KEY)||'[]');return Array.isArray(a)?a.filter(x=>x&&typeof x==='object'):[];}catch(e){return [];}}
+function saveAiHistory(en){try{const a=loadAiHistory();a.unshift(en);localStorage.setItem(AI_HIST_KEY,JSON.stringify(a.slice(0,AI_HIST_MAX)));}catch(e){}}
+function deleteAiHist(i){try{const a=loadAiHistory();a.splice(i,1);localStorage.setItem(AI_HIST_KEY,JSON.stringify(a));}catch(e){}if(aiHistOpen===i)aiHistOpen=-1;renderAiBox();}
+function toggleAiHist(i){aiHistOpen=(aiHistOpen===i?-1:i);renderAiBox();}
+function aiTrendSummary(){
+  try{
+    const sess=store.sessions||[];
+    const all=sess.flatMap(x=>x.shots||[]);
+    if(!all.length)return '記録なし';
+    const tot=rate(all);
+    const pr=rate(sess.filter(x=>x.type==='practice').flatMap(x=>x.shots||[]));
+    const ma=rate(sess.filter(x=>x.type==='match').flatMap(x=>x.shots||[]));
+    const days=bucketsOf(sess,'day','all').slice(-7).map(b=>b.key.slice(5)+' '+b.h+'/'+b.n).join('、');
+    return '通算 '+tot.h+'/'+tot.n+'本（'+tot.p+'%）。練習 '+pr.h+'/'+pr.n+'本（'+pr.p+'%）、試合 '+ma.h+'/'+ma.n+'本（'+ma.p+'%）。直近7日：'+(days||'なし');
+  }catch(e){return '';}
+}
+function aiTeamSummary(){
+  try{
+    if(!myTeams.length)return '';
+    const ids=teamMemberIds(myTeams[0]);
+    const mine=rate((store.sessions||[]).flatMap(x=>x.shots||[]));
+    const others=rate(ids.filter(id=>id!==myId).flatMap(id=>allSessionsOf(id)).flatMap(s=>s.shots||[]));
+    if(!others.n)return 'チーム平均：記録なし';
+    return '自分の的中率 '+mine.p+'%（'+mine.h+'/'+mine.n+'本）。チームの他のメンバー合計 '+others.h+'/'+others.n+'本（'+others.p+'%）';
+  }catch(e){return '';}
+}
+function buildAiPrompt(){
+  const d=lastDiag||{};
+  const scopeLabel=d.scope==='recent'?'直近4本':(d.scope==='total'?'通算':'この回');
+  const checked=(diagChecked||[]).map(i=>d.checks&&d.checks[i]?d.checks[i].q:'').filter(Boolean);
+  const recent=(store.sessions||[]).flatMap(x=>x.shots||[]).slice(-20).map(s=>[Math.round(s.nx*100)/100,Math.round(s.ny*100)/100,s.hit?1:0]);
+  const lines=[
+    'あなたは弓道の指導補助AIです。以下の記録データと診断結果をもとに、日本語で分析してください。',
+    '【診断結果】対象：'+scopeLabel+' '+(d.n||0)+'本（的中 '+(d.hit||0)+'本'+(d.allHit?'、皆中':'')+'）。判定：'+(d.badge||'なし')+'。偏り：'+(d.dirLabel||'なし')+'（平均矢所 x='+(d.avgX!=null?d.avgX:'?')+'、y='+(d.avgY!=null?d.avgY:'?')+'、中心からの距離 '+(d.avgDist!=null?d.avgDist:'?')+'、バラつき '+(d.spread!=null?d.spread:'?')+'）。'+(d.ho?('甲矢・乙矢の差：'+d.ho+'。'):'')+'ユーザーが当てはまるとした原因：'+(checked.length?checked.join(' / '):'なし')+'。',
+    '【的中率の推移】'+aiTrendSummary(),
+    '【チーム比較】'+(aiTeamSummary()||'なし'),
+    '【直近の矢所】'+JSON.stringify(recent)+'（x,yは的中心からの相対座標で-1〜1、h=1が的中）',
+    '【指示】診断と推移を突き合わせて、(1)まとめ (2)原因の絞り込み (3)練習のポイントを、合わせて300字程度の日本語で返してください。断定は避け「可能性があります」等の表現を使い、医療的な助言はしないでください。'
+  ];
+  return lines.join('\n');
+}
+async function callGemini(prompt){
+  if(typeof window.__aiGenerate==='function')return await window.__aiGenerate(prompt);
+  if(typeof window.__geminiGenerate==='function')return await window.__geminiGenerate(prompt);
+  const e=new Error('ai-not-configured');e.code='ai-not-configured';throw e;
+}
+function aiErrorMessage(e){
+  const c=(e&&e.code)||'';
+  const m=String((e&&e.message)||'');
+  if(c==='ai-not-configured')return 'AI分析の設定がまだ完了していません。READMEの手順で Firebase コンソールの設定（AI Logic の有効化とサイトキーの貼り付け）を確認してください。';
+  if(c==='resource-exhausted'||/429/.test(m))return 'AIの利用回数の上限に達しました。明日もう一度お試しください。';
+  if(c==='failed-precondition'||c==='permission-denied'||/API has not been used|not enabled|PERMISSION_DENIED/i.test(m))return 'AIの利用設定がまだ完了していません。READMEの手順で Firebase コンソールの設定を確認してください。';
+  if(/network|fetch|Failed to fetch/i.test(m))return '通信に失敗しました。時間をおいて再度お試しください。';
+  return 'AI分析に失敗しました。時間をおいて再度お試しください。';
+}
+async function runAiAnalysis(){
+  if(aiBusy)return;
+  const box=document.getElementById('aiBox');if(!box)return;
+  /* 有料プランが有効でないときは AI を呼ばず、有料プランの案内を表示する */
+  if(!aiSubscriptionActive()){aiCurrentText='';aiCurrentNote='';renderAiBox();return;}
+  const today=aiTodayStr();
+  const hist=loadAiHistory();
+  if(aiLastDate()===today&&hist.length){
+    aiCurrentText=hist[0].text;aiCurrentNote='今日はもう分析済みです。最新の結果を表示しています。';
+    renderAiBox();return;
+  }
+  if(!lastDiag||!lastDiag.n){
+    aiCurrentText='';aiCurrentNote='まず的をタップして1本以上記録してください。';
+    renderAiBox();return;
+  }
+  aiBusy=true;aiCurrentNote='AIが分析しています…';aiCurrentText='';renderAiBox();
+  try{
+    const prompt=buildAiPrompt();
+    const text=await callGemini(prompt);
+    const t=String(text||'').trim();
+    if(!t)throw new Error('empty');
+    aiCurrentText=t;aiCurrentNote='';
+    saveAiHistory({at:Date.now(),date:today,scope:lastDiag.scope,badge:lastDiag.badge||'',text:t});
+    aiSetLastDate(today);
+  }catch(e){
+    aiCurrentText='';aiCurrentNote=aiErrorMessage(e);
+  }
+  aiBusy=false;renderAiBox();
+}
+function renderAiBox(){
+  const box=document.getElementById('aiBox');if(!box)return;
+  const hist=loadAiHistory();
+  const items=hist.map((en,i)=>{
+    const first=String(en.text||'').split('\n')[0].slice(0,40);
+    const open=aiHistOpen===i;
+    return `<div class='history-row'><div class='history-top'><span>${esc(en.date||'')}　${esc(en.badge||'')}</span><span><button onclick='toggleAiHist(${i})'>${open?'閉じる':'見る'}</button> <button class='danger' onclick='deleteAiHist(${i})'>削除</button></span></div><div class='vtag'>${esc(first)}${String(en.text||'').length>40?'…':''}</div>${open?`<div style='font-size:.84rem;white-space:pre-wrap;margin-top:6px'>${esc(en.text||'')}</div>`:''}</div>`;
+  }).join('');
+  box.innerHTML=`<div style='margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)'>
+    <div class='sess-row'><span style='font-size:.88rem;font-weight:bold'>🤖 AI分析</span><button class='pri' id='aiBtn' onclick='runAiAnalysis()' ${aiBusy?'disabled':''}>AI分析する</button></div>
+    <p class='hint-text' style='text-align:left'>診断結果と的中率の推移をAIが分析します。1日1回まで。名前・メールは送られません。</p>
+    ${aiSubscriptionActive()?'':aiPaywallHtml()}
+    ${aiCurrentNote?`<p class='hint-text' style='text-align:left'><b>${esc(aiCurrentNote)}</b></p>`:''}
+    ${aiCurrentText?`<div id='aiResult' class='diag-summary' style='white-space:pre-wrap'>${esc(aiCurrentText)}</div>`:''}
+    <h2 style='margin:12px 0 4px'>🕘 過去のAI分析</h2>
+    <div id='aiHistoryList'>${items||`<p class='hint-text' style='text-align:left'>まだAI分析の履歴がありません。</p>`}</div>
+  </div>`;
+}
+
 
 /* ---- 動画連携 ---- */
 function shotLabel(s){return `第${s.stand}立・${s.arrowNum}本目（${s.arrowType} / ${s.hit?'◯':'×'}）`;}
@@ -652,7 +799,7 @@ function renderAll(){
     document.getElementById('nextShotLabel').textContent=`次：第${Math.floor(ni/4)+1}立・${na}本目（${na%2===1?'甲矢':'乙矢'}）`;
     const hits=shots.filter(s=>s.hit).length;
     document.getElementById('hitRateLabel').textContent=`的中: ${hits}/${shots.length} (${shots.length?Math.round(hits/shots.length*100):0}%)`;
-    renderSession();draw();updateDiagnosis();renderHistory();renderVideoTarget();renderMatch();renderSessionList();
+    renderSession();draw();updateDiagnosis();renderAiBox();renderHistory();renderVideoTarget();renderMatch();renderSessionList();
   }catch(e){console.warn('renderAll failed',e);}
 }
 try{renderAll();}catch(e){console.warn('initial render failed',e);}
@@ -756,7 +903,7 @@ const SORTS=[['rate','的中率順'],['hits','的中本数順']];
 function tabs(key,items){return items.map(([v,l])=>`<button class='${st[key]===v?'active':''}' data-k='${key}' data-v='${v}'>${l}</button>`).join('');}
 function applyHash(){
   const h=location.hash.replace('#','');
-  const p=(h==='trend'||h==='rank'||h==='profile'||h==='team')?h:'rec';
+  const p=(h==='trend'||h==='rank'||h==='profile'||h==='team'||h==='legal')?h:'rec';
   document.body.dataset.pg=p;
   if(p==='rank')st.member='';
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.pg===p));
@@ -1504,6 +1651,9 @@ async function initFirebase(){
     const cfg=loadFirebaseConfig();
     if(!cfg){authReady=true;updateTeamBar();updateAuthBar();return false;}
     if(!firebase.apps.length)firebase.initializeApp(cfg);
+    /* AI版：末尾のモジュールスクリプトが Firebase AI Logic を
+       初期化するための設定。compat SDK とは別のアプリとして初期化する。 */
+    window.__FIREBASE_CONFIG__=cfg;
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
     try{await auth.getRedirectResult();}catch(e){authMsg='Googleログインできませんでした：'+((e&&e.message)||e);}
@@ -1960,7 +2110,8 @@ function renderProfilePage(){
   <h2 style='margin:14px 0 4px'>🔐 同意とデータ</h2>
   <p class='hint-text' style='text-align:left'>${consent&&consent.agreed?('共有に同意済み'+(consent.at?('（'+new Date(consent.at).toLocaleDateString('ja-JP')+'）'):'')):'共有への同意がありません'}</p>
   <div class='sess-row'><button data-pf-act='showConsent'>同意内容を見る</button><button data-pf-act='withdraw'>同意を撤回する</button></div>
-  <div class='sess-row'><button class='danger' data-pf-act='deleteData'>自分のデータを削除する</button></div></div>`;
+  <div class='sess-row'><button class='danger' data-pf-act='deleteData'>自分のデータを削除する</button></div>
+  <div class='sess-row'><button data-pf-act='showLegal'>特定商取引法に基づく表示・利用規約</button></div></div>`;
 }
 async function saveProfile(){
   const v=id=>{const x=document.getElementById(id);return x?x.value.trim():'';};
@@ -2017,6 +2168,7 @@ function renderOnboard(){
     <ul class='consent-list'>
     <li>あなたの記録（日付・的中・矢所・練習／試合）とプロフィール（表示名・所属・段位・級位・弓歴・ひとこと）、アイコン画像、チーム名が、チームのメンバーやランキングで他の人に見られること。</li>
     <li>記録・プロフィールは Firebase（東京リージョン）に保存されること。動画（射形動画）はあなたの端末内にだけ保存され、Firebase には送られません。</li>
+    <li>AI分析を使うときは、記録データ（矢所・的中率・診断結果）が Google の AI に送られること。名前・メールアドレス・ユーザーIDは送られません。AI分析の結果はあなたの端末内にだけ保存されます。</li>
     <li>Google アカウントのメールアドレスはログイン認証にだけ使い、他の人には表示されず、Firebase にも保存されません。</li>
     <li>自分のデータの削除を希望するときは、プロフィール画面の「自分のデータを削除する」からできます。</li>
     </ul>
@@ -2221,7 +2373,19 @@ function shareCard(){
 }
 function renderStats(){
   const pg=document.body.dataset.pg;
-  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();else if(pg==='profile')renderProfilePage();else if(pg==='team')renderTeamPage();
+  if(pg==='trend')renderTrendPage();else if(pg==='rank')renderRankPage();else if(pg==='profile')renderProfilePage();else if(pg==='team')renderTeamPage();else if(pg==='legal')renderLegalPage();
+}
+/* ---- 特定商取引法に基づく表示・利用規約・プライバシーポリシー ---- */
+function renderLegalPage(){
+  const el=document.getElementById('legalPage');if(!el)return;
+  el.innerHTML=`<div class='card'><h2>📜 特定商取引法に基づく表示・利用規約</h2>
+  <h2 style='margin:14px 0 4px'>特定商取引法に基づく表示</h2>
+  <p class='hint-text' style='text-align:left'>販売価格：月額500円（税込）<br>支払い方法：クレジットカード（Stripe による決済）<br>提供時期：決済完了後、すぐに利用可能になります<br>返品・キャンセル：解約はいつでも可能です。解約後も次回更新日までご利用いただけます。日割り返金はありません。<br>事業者名：［あとで入力］<br>住所：［あとで入力］<br>電話番号：［あとで入力］</p>
+  <h2 style='margin:14px 0 4px'>利用規約</h2>
+  <p class='hint-text' style='text-align:left'>・AI分析は、記録データをもとにした参考情報です。指導者の助言に代わるものではありません。<br>・AI分析の結果は、的中を保証するものではありません。<br>・有料プラン（AI分析）は月額500円（税込）で、決済完了後すぐにご利用いただけます。解約はいつでもでき、解約後も次回更新日までご利用いただけます。日割り返金はありません。<br>・記録・推移・ランキング・チームなどの基本機能は、課金状態に関わらず無料でご利用いただけます。</p>
+  <h2 style='margin:14px 0 4px'>プライバシーポリシー</h2>
+  <p class='hint-text' style='text-align:left'>・AI分析を使うとき、記録データ（矢所・的中率・診断結果）が Google の AI に送られます。名前・メールアドレス・ユーザーIDは送られません。<br>・AI分析の結果は、あなたの端末内にだけ保存されます。<br>・記録・プロフィールは Firebase に保存され、チームのメンバーに共有されます。動画は端末内にだけ保存され、Firebase には送られません。<br>・Google アカウントのメールアドレスはログイン認証にだけ使い、他の人には表示されず、Firebase にも保存されません。</p>
+  <div class='sess-row'><button onclick="setPage('rec')">記録に戻る</button></div></div>`;
 }
 function renderTeamPage(){
   const el=document.getElementById('teamPage');if(!el)return;
@@ -2280,6 +2444,7 @@ document.getElementById('profilePage').addEventListener('click',e=>{
   else if(b.dataset.pfAct==='withdraw')withdrawConsent();
   else if(b.dataset.pfAct==='deleteData')deleteMyData();
   else if(b.dataset.pfAct==='showConsent'){obStep=0;obMsg='';renderOnboard();}
+  else if(b.dataset.pfAct==='showLegal')setPage('legal');
   else if(b.dataset.pfAct==='removeIcon'){delete profile.icon;profileUpdatedAt=Date.now();saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
 });
 document.getElementById('profilePage').addEventListener('change',e=>{
@@ -2373,6 +2538,38 @@ applyHash();
   }
   renderHistory();
 })().catch(()=>{});
+</script>
+<script type="module">
+/* AI版：Firebase AI Logic（Gemini）の呼び出し。
+   compat SDK（v10.12.2）とは別にモジュール版 SDK（v13.4.0）を使い、
+   'ai' という名前のアプリとして初期化する。APIキーはクライアントに
+   埋め込まない（Firebase AI Logic のプロキシがサーバー側で鍵を差し込む）。
+   App Check（reCAPTCHA v3）が必須。サイトキーは Firebase コンソールで取得し、
+   下の RECAPTCHA_V3_SITE_KEY に貼ること（README-公開手順.md の「AI版の設定」参照）。 */
+import {initializeApp} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app.js';
+import {initializeAppCheck,ReCaptchaV3Provider} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-app-check.js';
+import {getAI,GoogleAIBackend,getGenerativeModel} from 'https://www.gstatic.com/firebasejs/13.4.0/firebase-ai.js';
+const RECAPTCHA_V3_SITE_KEY='YOUR_RECAPTCHA_V3_SITE_KEY';
+const AI_MODEL_MODULE='gemini-3.5-flash-lite';
+try{
+  const cfg=window.__FIREBASE_CONFIG__||null;
+  if(!cfg||!cfg.apiKey){window.__aiNotConfigured=true;throw new Error('no firebase config');}
+  if(!RECAPTCHA_V3_SITE_KEY||RECAPTCHA_V3_SITE_KEY==='YOUR_RECAPTCHA_V3_SITE_KEY'){window.__aiNotConfigured=true;}
+  else{
+    const aiApp=initializeApp(cfg,'ai');
+    initializeAppCheck(aiApp,{provider:new ReCaptchaV3Provider(RECAPTCHA_V3_SITE_KEY),isTokenAutoRefreshEnabled:true});
+    const ai=getAI(aiApp,{backend:new GoogleAIBackend(),useLimitedUseAppCheckTokens:true});
+    window.__geminiGenerate=async(prompt)=>{
+      const model=getGenerativeModel(ai,{model:AI_MODEL_MODULE});
+      const res=await model.generateContent(prompt);
+      return res.response.text();
+    };
+    window.__aiReady=true;
+  }
+}catch(e){
+  window.__aiError=String((e&&e.message)||e);
+  if(!window.__geminiGenerate)window.__aiNotConfigured=true;
+}
 </script>
 </body>
 </html>
