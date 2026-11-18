@@ -2341,10 +2341,12 @@ async function memberBody(uid){
     +(tot.n?`<div class='diag-summary'>${sumLabel}　合計 ${tot.h}/${tot.n}本（${pct(tot)}%）／皆中 ${tot.kai}回</div>${chartSvg(series,per)}${legend}`:'')
     +`<div class='history-list'>${rows||'<div style="color:var(--muted);">該当する記録がありません</div>'}</div>`;
 }
-/* 管理者だけが開ける設定：URL に ?admin=1 または #admin を付けたときだけ
+/* 管理者だけが開ける設定：ログイン中のアカウントが管理者（つかもとみずほ）のときだけ
    「メンバーと共有」／「Firebaseで共有する」カードを表示する。
-   普通に開いた人には見えない。 */
-function isAdmin(){try{return new URLSearchParams(location.search).get('admin')==='1'||location.hash==='#admin';}catch(e){return location.hash==='#admin';}}
+   URL では管理者になれない。uid は Firebase Auth の識別子で、知っているだけでは
+   ログインできない（なりすましはできない）ため、HTML に書いて問題ない。 */
+const ADMIN_UIDS=['KIQ8vsWXAiaJMCMDyT8miLqpaU93']; /* 管理者：つかもとみずほだけ */
+function isAdmin(){return !!myId&&ADMIN_UIDS.includes(myId);}
 /* ---- プロフィール画面（別画面） ---- */
 let profileMsg='';
 function renderProfilePage(){
