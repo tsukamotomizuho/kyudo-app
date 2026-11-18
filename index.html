@@ -774,6 +774,7 @@ function setStat(k,v){
 
 /* ---- 期間ごとの集計（年・月・週・日） ---- */
 function bucketKey(date,per){
+  if(typeof date!=='string')return '';
   if(per==='year')return date.slice(0,4);
   if(per==='month')return date.slice(0,7);
   if(per==='day')return date;
@@ -1042,10 +1043,26 @@ function rebuildShotMeta(shots){
    ため、見つけたら別キーに逃がして警告を出し、正常なものだけを通す。 */
 function isValidLocalSession(x){return !!x&&typeof x.id==='string'&&typeof x.date==='string'&&Array.isArray(x.shots);}
 function isValidCompactSession(x){return !!x&&typeof x.id==='string'&&(x.s===undefined||Array.isArray(x.s));}
-function sanitizeCompactShots(s){return (s||[]).filter(a=>Array.isArray(a)&&a.length>=2&&typeof a[0]==='number'&&typeof a[1]==='number');}
+/* 共有形式の射を浄化して {x,y,h} の配列に正規化する。
+   新形式は map の配列（Firestore が受け入れる形）。旧形式 [nx,ny,hit]
+   の配列も読み側は受け入れる（書き側は新形式だけを出す）。
+   s が配列でない場合は [] を返す（呼び出し側で例外にならないため）。
+   NaN / Infinity は Firestore が拒否するため弾く。 */
+function sanitizeCompactShots(s){
+  if(!Array.isArray(s))return [];
+  const out=[];
+  s.forEach(a=>{
+    if(Array.isArray(a)){
+      if(a.length>=2&&typeof a[0]==='number'&&typeof a[1]==='number'&&Number.isFinite(a[0])&&Number.isFinite(a[1]))out.push({x:a[0],y:a[1],h:a[2]?1:0});
+    }else if(a&&typeof a==='object'){
+      if(typeof a.x==='number'&&typeof a.y==='number'&&Number.isFinite(a.x)&&Number.isFinite(a.y))out.push({x:a.x,y:a.y,h:a.h?1:0});
+    }
+  });
+  return out;
+}
 function sanitizeLocalSession(x){
   if(!isValidLocalSession(x))return null;
-  return Object.assign({},x,{type:(typeof x.type==='string'?x.type:'practice'),title:(typeof x.title==='string'?x.title:''),shots:x.shots.filter(h=>h&&typeof h.nx==='number'&&typeof h.ny==='number')});
+  return Object.assign({},x,{type:(typeof x.type==='string'?x.type:'practice'),title:(typeof x.title==='string'?x.title:''),shots:x.shots.filter(h=>h&&Number.isFinite(h.nx)&&Number.isFinite(h.ny))});
 }
 function quarantineBad(kind,v){
   try{console.warn('quarantined malformed session',kind,v);}catch(e){}
@@ -1091,7 +1108,7 @@ function mergeRemoteIntoLocal(remoteSessions){
     if(deletedSessionIds.has(x.id))return;
     if(byId.has(x.id))return;
     const cleanShots=sanitizeCompactShots(x.s);
-    byId.set(x.id,{id:x.id,date:x.d,type:(typeof x.t==='string'?x.t:'practice'),title:(typeof x.ti==='string'?x.ti:''),shots:rebuildShotMeta(cleanShots.map(a=>({nx:a[0],ny:a[1],hit:!!a[2]})))});
+    byId.set(x.id,{id:x.id,date:x.d,type:(typeof x.t==='string'?x.t:'practice'),title:(typeof x.ti==='string'?x.ti:''),shots:rebuildShotMeta(cleanShots.map(a=>({nx:a.x,ny:a.y,hit:!!a.h})))});
     changed=true;
   });
   saveSeenIds();
@@ -1130,7 +1147,7 @@ function compactSessions(maxBytes){
     return x.shots.length&&(shareMode==='all'||x.type==='match');
   })
     .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id))
-    .map(x=>({id:x.id,d:x.date,t:(typeof x.type==='string'?x.type:'practice'),ti:String(x.title||'').slice(0,40),s:x.shots.filter(h=>h&&typeof h.nx==='number'&&typeof h.ny==='number').map(h=>[r(h.nx),r(h.ny),h.hit?1:0])}));
+    .map(x=>({id:x.id,d:x.date,t:(typeof x.type==='string'?x.type:'practice'),ti:String(x.title||'').slice(0,40),s:x.shots.filter(h=>h&&Number.isFinite(h.nx)&&Number.isFinite(h.ny)).map(h=>({x:r(h.nx),y:r(h.ny),h:h.hit?1:0}))}));
   let trimmed=false;
   while(ss.length>1&&JSON.stringify(ss).length>cap){const t=ss.shift();if(t&&t.id)trimmedIds.add(t.id);trimmed=true;}
   if(trimmed)saveTrimmedIds();
@@ -1197,7 +1214,7 @@ async function doShare(){
       const code=(e&&e.code)||'';
       lastShareError=code||((e&&e.message)||String(e));
       try{console.error('doShare failed',code,lastShareError);}catch(_){}
-      shareStatus=(code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':('共有に失敗しました'+(code?'（'+code+'）':'')+'。時間をおいて再度お試しください'));
+      shareStatus=(code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((code==='invalid-argument')?'共有できません：共有するデータの形式に問題があります':('共有に失敗しました'+(code?'（'+code+'）':'')+'。時間をおいて再度お試しください'));
       /* 書き込み失敗時は指数バックオフで再送する（最大3回） */
       if(shareRetries<3){const d=[5000,15000,45000][shareRetries];shareRetries++;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,d);}
     }
@@ -1266,7 +1283,9 @@ function rerender(){updateShareStatusLine();if(document.body.dataset.pg==='rec')
 /* ---- Firebase Firestore ----
    データ設計（このアプリの既存の形そのまま）：
    teams/{teamId}   {name, code, owner, created}
-   members/{userId} {v:2, mode, teams:[teamId], name, updated, sessions:[{id,d,t,ti,s:[[nx,ny,hit],...]}]}
+   members/{userId} {v:2, mode, teams:[teamId], name, updated, sessions:[{id,d,t,ti,s:[{x,y,h},...]}]}
+   ※ s は map の配列にする（配列の中に配列を入れると Firestore が
+      invalid-argument で拒否するため。旧形式 [nx,ny,hit] の配列は読む側だけ受け入れる）。
    Firestoreの DocumentReference / CollectionReference は、
    既存コードが期待する doc()/collection()/onSnapshot()/where().get() と
    同じ形なので、dbCap に firebase.firestore() をそのまま渡せる。
@@ -1557,7 +1576,9 @@ function allSessionsOf(uid){
   if(uid===myId||uid==='me')return store.sessions;
   const m=members[uid];
   if(!m||!Array.isArray(m.sessions))return [];
-  return m.sessions.map(x=>({id:x.id,date:x.d,type:x.t,title:x.ti||'',shots:(x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]}))}));
+  /* 共有先の s は sanitize を通して読む（s が配列でない真値や旧形式の
+     配列でも例外にならないようにするため。日付なしは bucketsOf 側で弾く） */
+  return m.sessions.filter(x=>x&&typeof x==='object').map(x=>({id:x.id,date:x.d,type:x.t,title:x.ti||'',shots:sanitizeCompactShots(x.s).map(a=>({nx:a.x,ny:a.y,hit:!!a.h}))}));
 }
 /* チーム tid のメンバーID一覧（'all' は共有中の全員）。自分は常に含む。 */
 function teamNow(){return (st.team&&(st.team==='all'||myTeams.includes(st.team)))?st.team:(myTeams[0]||'all');}
@@ -1877,7 +1898,8 @@ async function memberBody(uid){
   const nm=await names([uid,myId||'me']);
   /* ランキングで選んだ期間（st.sel）があるときは、その期間の記録だけを一覧・合計の対象にする */
   const selKey=st.sel||null;
-  const inSel=x=>!selKey||bucketKey(x.date,per)===selKey;
+  /* 日付のないセッションは期間の絞り込み・一覧表示で例外になるため対象から外す */
+  const inSel=x=>typeof x.date==='string'&&(!selKey||bucketKey(x.date,per)===selKey);
   const theirS=allSessionsOf(uid).filter(x=>(st.type==='all'||x.type===st.type)&&inSel(x));
   const theirs=bucketsOf(theirS,per,st.type),mine=bucketsOf(store.sessions.filter(x=>(st.type==='all'||x.type===st.type)&&inSel(x)),per,st.type);
   const name=esc(nm[uid]||'メンバー');
