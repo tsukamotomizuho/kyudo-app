@@ -2234,13 +2234,14 @@ function dayBody(all,sess){
   const stands=[];
   ss.forEach(x=>{for(let i=0;i<x.shots.length;i+=4){const g=x.shots.slice(i,i+4);stands.push({h:g.filter(y=>y.hit).length,n:g.length});}});
   const W=320,H=160,L=28,R=10,T=18,B=28,pw=W-L-R,ph=H-T-B,m=Math.max(stands.length,1),cw=pw/m;
-  const ys=p=>T+ph*(1-p/100);
+  /* 縦軸は的中本数（0〜4射）。棒はその立の的中本数、折れ線は累積の平均的中本数（1立あたり）。 */
+  const ys=v=>T+ph*(1-v/4);
   let svg=`<svg viewBox='0 0 ${W} ${H}' width='100%' role='img' aria-label='一日の的中推移'>`;
-  [0,50,100].forEach(p=>{svg+=`<line class='gl' x1='${L}' x2='${W-R}' y1='${ys(p)}' y2='${ys(p)}'/><text class='tx' x='${L-4}' y='${ys(p)+3}' text-anchor='end'>${p}</text>`;});
-  let ch=0,cn=0;const pts=[];
+  [0,1,2,3,4].forEach(v=>{svg+=`<line class='gl' x1='${L}' x2='${W-R}' y1='${ys(v)}' y2='${ys(v)}'/><text class='tx' x='${L-4}' y='${ys(v)+3}' text-anchor='end'>${v===0?'0':v+'射'}</text>`;});
+  let ch=0;const pts=[];
   stands.forEach((x,i)=>{
-    ch+=x.h;cn+=x.n;
-    const cx=L+cw*i+cw/2,bw=Math.min(cw*0.6,32),bh=ph*(x.h/x.n),cp=Math.round(ch/cn*100);
+    ch+=x.h;
+    const cx=L+cw*i+cw/2,bw=Math.min(cw*0.6,32),bh=ph*(x.h/4),cp=ch/(i+1);
     svg+=`<rect class='bar' x='${cx-bw/2}' y='${T+ph-bh}' width='${bw}' height='${bh}' rx='2'/><text class='tx' x='${cx}' y='${T+ph-bh-3}' text-anchor='middle'>${x.h}/${x.n}</text>`;
     if(m<=10||i%2===0)svg+=`<text class='tx' x='${cx}' y='${H-10}' text-anchor='middle'>${i+1}立</text>`;
     pts.push([cx,ys(cp),cp]);
@@ -2252,7 +2253,7 @@ function dayBody(all,sess){
   return `<h2 style='margin:4px 0 6px'>🕐 ${bucketLabel(day,'day')} の一日の推移</h2>
   <div class='sess-row'><span style='font-size:.82rem'>日付：</span><select data-k='day'>${days.map(k=>`<option value='${k}' ${k===day?'selected':''}>${bucketLabel(k,'day')}</option>`).join('')}</select></div>
   <div class='diag-summary'>${stands.length}立 ${th}/${tn}本（${tn?Math.round(th/tn*100):0}%）／皆中 ${kai}回</div>${svg}
-  <div class='legend'><span style='color:var(--chkb)'>■</span> 立ごとの的中　<span style='color:#d98e04'>●</span> 累積的中率（%）</div><h2 style='margin:12px 0 6px'>📅 日ごとの推移</h2>`;
+  <div class='legend'><span style='color:var(--chkb)'>■</span> 立ごとの的中　<span style='color:#d98e04'>●</span> 累積の平均的中本数（本／立）</div><h2 style='margin:12px 0 6px'>📅 日ごとの推移</h2>`;
 }
 function trendBody(){
   /* 推移はランキングと期間・種別を共有しない（st.tper/st.ttype）。
