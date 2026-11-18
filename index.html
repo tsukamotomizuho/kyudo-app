@@ -133,7 +133,7 @@ input[type=file]{display:none}
     <button data-menu='rec'>📝 記録</button>
     <button data-menu='trend'>📈 推移</button>
     <button data-menu='rank'>🏅 ランキング</button>
-    <button data-menu='legal'>📜 特定商取引法・利用規約</button>
+    <!-- 有料化するまでは法律ページへのリンクを出さない（ページ本体は残してある） -->
     <button data-menu='logout'>🚪 ログアウト</button>
   </div>
 
@@ -580,9 +580,11 @@ const AI_HIST_MAX=10;
    shareFallbackOnce の書き込みペイロードには subscription を含めないこと。
    adoptMembersDoc も subscription を消したり上書きしたりしない。
    aiSubscriptionActive() は members[myId].subscription を都度読む。 */
+const AI_PAYWALL_ENABLED=false; /* 有料化するまでは false（AI分析は誰でも使える）。有料化するときは true にする */
 const STRIPE_CHECKOUT_URL=''; /* Stripe で作った決済リンク（Payment Links）またはサーバーの /create-checkout-session の URL を貼る */
 const STRIPE_PORTAL_URL=''; /* Stripe Billing Portal またはサーバーの /portal の URL を貼る */
 function aiSubscriptionActive(){
+  if(!AI_PAYWALL_ENABLED)return true; /* 有料化前：課金状態に関わらず AI分析を使える */
   try{
     const s=members&&myId&&members[myId]?members[myId].subscription:null;
     return !!(s&&s.status==='active'&&typeof s.currentPeriodEnd==='number'&&s.currentPeriodEnd>Date.now());
@@ -2111,7 +2113,7 @@ function renderProfilePage(){
   <p class='hint-text' style='text-align:left'>${consent&&consent.agreed?('共有に同意済み'+(consent.at?('（'+new Date(consent.at).toLocaleDateString('ja-JP')+'）'):'')):'共有への同意がありません'}</p>
   <div class='sess-row'><button data-pf-act='showConsent'>同意内容を見る</button><button data-pf-act='withdraw'>同意を撤回する</button></div>
   <div class='sess-row'><button class='danger' data-pf-act='deleteData'>自分のデータを削除する</button></div>
-  <div class='sess-row'><button data-pf-act='showLegal'>特定商取引法に基づく表示・利用規約</button></div></div>`;
+  <!-- 有料化するまでは法律ページへのリンクを出さない（ページ本体は残してある） --></div>`;
 }
 async function saveProfile(){
   const v=id=>{const x=document.getElementById(id);return x?x.value.trim():'';};
