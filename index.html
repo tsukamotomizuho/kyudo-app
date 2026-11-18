@@ -1107,7 +1107,8 @@ function restoreBackup(uid){
     }
   }catch(e){}
   if(n>0){try{localStorage.removeItem('kyudo_backup_'+uid);}catch(e){}}
-  if(n){try{alert('バックアップから'+n+'件の記録を復元しました。数秒後に共有されます。');}catch(e){}try{scheduleShare();}catch(e){}}
+  /* 復元は確認なしで自動で行う（お知らせは出さない）。復元したら共有し直す */
+  if(n){try{scheduleShare();}catch(e){}}
   return n;
 }
 /* OWNER_KEY が無かったときの無名の退避キー（kyudo_backup_unknown_*）が
@@ -1146,7 +1147,7 @@ function restoreUnknownBackups(){
     if(total){
       store.sessions=[...byId.values()];shots=curSession().shots;persistStore();saveSeenIds();
       adoptLatestSessionIfCurrentEmpty();
-      try{alert('バックアップから'+total+'件の記録を復元しました。数秒後に共有されます。');}catch(e){}
+      /* 復元は確認なしで自動で行う（お知らせは出さない）。復元したら共有し直す */
       try{scheduleShare();}catch(e){}
     }
   }catch(e){}
