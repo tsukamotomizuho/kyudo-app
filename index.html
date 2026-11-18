@@ -250,6 +250,10 @@ let targetType='kasumi', diagScope='recent', pendingShotId=null;
 const STORE_KEY='kyudo_sessions_v2';
 let sessFilter='all';
 let histStand=null;
+/* ユーザーが意図的に空のセッションを作ったかどうか（「＋ 新規セッション」や
+   セッション切替で空セッションを選んだ場合に true。統合・復元で current を
+   勝手に動かさないための印。ログイン・ユーザー切替で false に戻る） */
+let userMadeEmptySession=false;
 function dstr(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function todayStr(){return dstr(new Date());}
 function dateOfId(id){const t=Number(String(id).split('_')[0]);return t>0?dstr(new Date(t)):todayStr();}
@@ -266,13 +270,23 @@ function safeParseStore(raw){
 function loadStore(){
   try{
     const r=localStorage.getItem(STORE_KEY);
-    if(r){const o=safeParseStore(r);if(o&&Array.isArray(o.sessions)&&o.sessions.length)return o;}
+    if(r){
+      const o=safeParseStore(r);
+      if(o&&Array.isArray(o.sessions)&&o.sessions.length){
+        /* 読み込み時に形状を検査する（壊れたセッションが端末内にあると、
+           集計・描画・共有のあちこちで例外が起きるため） */
+        const clean=o.sessions.map(sanitizeLocalSession);
+        o.sessions.forEach((x,i)=>{if(!clean[i])quarantineBad('stored',x);});
+        o.sessions=clean.filter(Boolean);
+        if(o.sessions.length)return o;
+      }
+    }
     const old=localStorage.getItem(STORAGE_KEY);
     if(old){
       const a=safeParseStore(old);
       if(Array.isArray(a)&&a.length){
         const g={};
-        a.forEach(s=>{const d=dateOfId(s.id);(g[d]=g[d]||[]).push(s);});
+        a.forEach(s=>{if(!s||!s.id)return;const d=dateOfId(s.id);(g[d]=g[d]||[]).push(s);});
         const sessions=Object.keys(g).sort().map(d=>{
           const se=newSess(d,'practice');
           se.shots=g[d].map((s,i)=>Object.assign({},s,{stand:Math.floor(i/4)+1,arrowNum:(i%4)+1,arrowType:i%2===0?'甲矢':'乙矢'}));
@@ -325,7 +339,10 @@ function mergeStoreFromStorage(){
       if(!raw)return false;
       const o=JSON.parse(raw);
       if(o&&Array.isArray(o.sessions)){
-        store.sessions=o.sessions.length?o.sessions:[newSess()];
+        const clean=o.sessions.map(sanitizeLocalSession);
+        o.sessions.forEach((x,i)=>{if(!clean[i])quarantineBad('stored',x);});
+        store.sessions=clean.filter(Boolean);
+        if(!store.sessions.length)store.sessions.push(newSess());
         store.currentId=(o.currentId&&store.sessions.some(s=>s.id===o.currentId))?o.currentId:store.sessions[store.sessions.length-1].id;
         shots=curSession().shots;
         return true;
@@ -343,11 +360,18 @@ function mergeStoreFromStorage(){
   storedDeleted.forEach(id=>deletedSessionIds.add(id));
   const byId=new Map();
   let changed=false;
-  store.sessions.forEach(s=>{if(s&&s.id&&!deletedSessionIds.has(s.id))byId.set(s.id,s);else if(s&&s.id)changed=true;});
+  store.sessions.forEach(s=>{
+    const clean=sanitizeLocalSession(s);
+    if(!clean){if(s&&s.id)changed=true;return;}
+    if(deletedSessionIds.has(clean.id)){changed=true;return;}
+    byId.set(clean.id,clean);
+  });
   o.sessions.forEach(x=>{
-    if(!x||!x.id||deletedSessionIds.has(x.id))return;
-    if(byId.has(x.id))return;
-    byId.set(x.id,x);changed=true;
+    const clean=sanitizeLocalSession(x);
+    if(!clean){quarantineBad('stored',x);return;}
+    if(deletedSessionIds.has(clean.id))return;
+    if(byId.has(clean.id))return;
+    byId.set(clean.id,clean);changed=true;
   });
   if(changed){
     store.sessions=[...byId.values()];
@@ -595,7 +619,18 @@ function renderVideoTarget(){
 function renderHistory(){
   const list=document.getElementById('historyList');
   document.getElementById('histTabs').innerHTML='';
-  if(!shots.length){list.innerHTML='<div style="color:var(--muted);">まだ記録がありません</div>';return;}
+  if(!shots.length){
+    /* 現在のセッションが空でも、他のセッションに記録がある場合は案内を出す
+       （上部だけ見て「データが表示されない」と感じるのを防ぐため） */
+    const others=store.sessions.filter(s=>s&&s.id!==store.currentId&&s.shots&&s.shots.length);
+    if(others.length){
+      const n=others.reduce((a,s)=>a+s.shots.length,0);
+      list.innerHTML='<div style="color:var(--muted);">このセッションはまだ空です。下の「日付別の記録」に記録があります（'+others.length+'件・'+n+'本）。セッションを開くとここに表示されます。</div>';
+    }else{
+      list.innerHTML='<div style="color:var(--muted);">まだ記録がありません</div>';
+    }
+    return;
+  }
   const ns=Math.ceil(shots.length/4);
   const cur=(histStand==null||histStand>ns)?ns:histStand;
   document.getElementById('histTabs').innerHTML=Array.from({length:ns},(_,i)=>{const g=shots.slice(i*4,i*4+4);return `<button class='${i+1===cur?'active':''}' onclick='setHistStand(${i+1})'>第${i+1}立 ${g.filter(x=>x.hit).length}/${g.length}</button>`;}).join('');
@@ -625,7 +660,7 @@ try{renderAll();}catch(e){console.warn('initial render failed',e);}
 /* ---- セッション管理（日付・練習/試合） ---- */
 function esc(t){return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function dropVideos(arr){arr.forEach(s=>{if(videoUrlMap[s.id]){URL.revokeObjectURL(videoUrlMap[s.id]);delete videoUrlMap[s.id];}dbDel(s.id);});}
-function rate(arr){const h=arr.filter(s=>s.hit).length;return {h,n:arr.length,p:arr.length?Math.round(h/arr.length*100):0};}
+function rate(arr){const a=(arr||[]).filter(s=>!!s);const h=a.filter(s=>s.hit).length;return {h,n:a.length,p:a.length?Math.round(h/a.length*100):0};}
 function renderSession(){
   const s=curSession();
   document.getElementById('sessDate').value=s.date;
@@ -649,7 +684,7 @@ function renderMatch(){
 }
 function renderSessionList(){
   const el=document.getElementById('sessList');
-  const list=store.sessions.filter(s=>sessFilter==='all'||s.type===sessFilter).slice().sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  const list=store.sessions.filter(s=>sessFilter==='all'||s.type===sessFilter).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')||(b.id||'').localeCompare(a.id||''));
   if(!list.length){el.innerHTML='<div style="color:var(--muted);">該当する記録がありません</div>';return;}
   const wd=['日','月','火','水','木','金','土'];
   let last='',h='';
@@ -676,6 +711,8 @@ function switchSession(id){
   if(id===store.currentId)return;
   pruneEmpty();
   histStand=null;store.currentId=id;shots=curSession().shots;
+  /* ユーザーが自分で選んだセッションは、統合・復元で勝手に動かさない */
+  userMadeEmptySession=true;
   saveShots();renderAll();window.scrollTo({top:0,behavior:'smooth'});
 }
 function newSession(){
@@ -683,6 +720,8 @@ function newSession(){
   if(!c.shots.length){c.date=todayStr();saveShots();renderAll();return;}
   const ns=newSess(todayStr(),c.type);
   store.sessions.push(ns);store.currentId=ns.id;shots=ns.shots;histStand=null;
+  /* ユーザーが意図的に新しい空セッションを作った印 */
+  userMadeEmptySession=true;
   saveShots();renderAll();window.scrollTo({top:0,behavior:'smooth'});
 }
 function deleteSession(){
@@ -755,11 +794,13 @@ function buckets(per,type){return bucketsOf(store.sessions,per,type);}
 function bucketsOf(sessions,per,type){
   const map={};
   sessions.forEach(s=>{
+    /* 形状の壊れたセッションは集計から外す（date が無いと bucketKey で例外になるため） */
+    if(!s||typeof s.date!=='string'||!Array.isArray(s.shots))return;
     if(type!=='all'&&s.type!==type)return;
     const k=bucketKey(s.date,per);
     const b=map[k]||(map[k]={key:k,n:0,h:0,kai:0});
-    s.shots.forEach(x=>{b.n++;if(x.hit)b.h++;});
-    for(let i=0;i+4<=s.shots.length;i+=4){if(s.shots.slice(i,i+4).every(x=>x.hit))b.kai++;}
+    s.shots.forEach(x=>{if(!x)return;b.n++;if(x.hit)b.h++;});
+    for(let i=0;i+4<=s.shots.length;i+=4){if(s.shots.slice(i,i+4).every(x=>x&&x.hit))b.kai++;}
   });
   return Object.values(map).filter(b=>b.n>0).sort((a,b)=>a.key.localeCompare(b.key));
 }
@@ -785,6 +826,7 @@ function clearLocalUserData(){
   lastShared=null;obDone=false;obStep=1;obChoice='';obMsg='';obProfile={};consentDone=false;
   members={};membersFirst=false;st.sel=null;st.day=null;teamMsg='';profileMsg='';
   seenRemoteIds=new Set();deletedSessionIds=new Set();
+  userMadeEmptySession=false;shareRetries=0;lastShareError='';
   try{localStorage.removeItem(SEEN_KEY);localStorage.removeItem(DELETED_KEY);}catch(e){}
   /* 別タブに「消去された」ことを知らせる印を残す（このタブの保存で消した記録が復活しないようにするため） */
   try{localStorage.setItem('kyudo_store_cleared_v1',JSON.stringify({at:Date.now()}));}catch(e){}
@@ -836,15 +878,20 @@ function restoreBackup(uid){
     if(arr){
       const byId=new Map(store.sessions.map(s=>[s.id,s]));
       arr.forEach(x=>{
-        if(!x||!x.id||!x.date)return;
-        if(deletedSessionIds.has(x.id))return;
-        if(byId.has(x.id))return;
-        byId.set(x.id,x);n++;
+        const clean=sanitizeLocalSession(x);
+        if(!clean){quarantineBad('backup',x);return;}
+        if(deletedSessionIds.has(clean.id))return;
+        if(byId.has(clean.id))return;
+        byId.set(clean.id,clean);n++;
         /* 復元したセッションは prune の対象から外す（次のスナップショットで
            また消えてしまうため。第3回監査で確定した消失メカニズムの対策） */
-        seenRemoteIds.delete(x.id);
+        seenRemoteIds.delete(clean.id);
       });
-      if(n){store.sessions=[...byId.values()];shots=curSession().shots;persistStore();saveSeenIds();}
+      if(n){
+        store.sessions=[...byId.values()];shots=curSession().shots;persistStore();saveSeenIds();
+        /* 復元で記録が増え、現在のセッションが空なら、最新の記録があるセッションを開く */
+        adoptLatestSessionIfCurrentEmpty();
+      }
     }
   }catch(e){}
   if(n>0){try{localStorage.removeItem('kyudo_backup_'+uid);}catch(e){}}
@@ -968,7 +1015,7 @@ function updateTeamBar(){
 }
 /* 動画以外のデータはすべて Firestore に保存する（端末内は読み込み用の控え）。
    共有モードは「すべて共有」「試合のみ」の2択。「共有しない」はない。 */
-let shareMode='all',shareTimer=null,lastShared=null,sharing=false,rtok=0,shareRetries=0;
+let shareMode='all',shareTimer=null,lastShared=null,sharing=false,rtok=0,shareRetries=0,lastShareError='';
 try{shareMode=localStorage.getItem('kyudo_share')||'all';if(shareMode!=='all')shareMode='all';}catch(e){}
 
 /* 共有先で見たセッションID（削除の伝播判定用）と、この端末で削除したセッションID。
@@ -990,6 +1037,41 @@ function markSessionDeleted(id){if(!id)return;deletedSessionIds.add(id);saveDele
 function rebuildShotMeta(shots){
   return (shots||[]).map((a,i)=>({nx:a.nx,ny:a.ny,hit:!!a.hit,dist:Number(Math.hypot(a.nx||0,a.ny||0).toFixed(3)),stand:Math.floor(i/4)+1,arrowNum:(i%4)+1,arrowType:(i%2===0?'甲矢':'乙矢')}));
 }
+/* 形状の壊れたセッションを共有・統合・復元で弾くための検査と退避。
+   壊れた値があると compactSessions などで例外が起き、共有が毎回失敗する
+   ため、見つけたら別キーに逃がして警告を出し、正常なものだけを通す。 */
+function isValidLocalSession(x){return !!x&&typeof x.id==='string'&&typeof x.date==='string'&&Array.isArray(x.shots);}
+function isValidCompactSession(x){return !!x&&typeof x.id==='string'&&(x.s===undefined||Array.isArray(x.s));}
+function sanitizeCompactShots(s){return (s||[]).filter(a=>Array.isArray(a)&&a.length>=2&&typeof a[0]==='number'&&typeof a[1]==='number');}
+function sanitizeLocalSession(x){
+  if(!isValidLocalSession(x))return null;
+  return Object.assign({},x,{type:(typeof x.type==='string'?x.type:'practice'),title:(typeof x.title==='string'?x.title:''),shots:x.shots.filter(h=>h&&typeof h.nx==='number'&&typeof h.ny==='number')});
+}
+function quarantineBad(kind,v){
+  try{console.warn('quarantined malformed session',kind,v);}catch(e){}
+  try{
+    const k='kyudo_bad_sessions_v1';
+    let arr=[];try{arr=JSON.parse(localStorage.getItem(k)||'[]');}catch(e){}
+    if(!Array.isArray(arr))arr=[];
+    let sample='';try{sample=JSON.stringify(v).slice(0,200);}catch(e){}
+    arr.push({kind:kind,at:Date.now(),id:(v&&v.id)||null,sample:sample});
+    localStorage.setItem(k,JSON.stringify(arr.slice(-20)));
+  }catch(e){}
+}
+/* 現在のセッションが空で、他に射のあるセッションがある場合、最新の射あり
+   セッションを current にする（統合・復元直後のみ。ユーザーが意図的に空の
+   セッションを作った直後は動かさない）。 */
+function adoptLatestSessionIfCurrentEmpty(){
+  if(userMadeEmptySession)return false;
+  const cs=curSession();
+  if(!cs||(cs.shots&&cs.shots.length))return false;
+  const withShots=store.sessions.filter(s=>s&&s.shots&&s.shots.length);
+  if(!withShots.length)return false;
+  const latest=withShots.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.id||'').localeCompare(b.id||'')).pop();
+  store.currentId=latest.id;shots=latest.shots;histStand=null;
+  persistStore();
+  return true;
+}
 /* 共有先のセッションを端末内に統合する（IDで和集合。同IDはローカル優先。
    日付のないセッションは取り込まない。この端末で削除したものは復活させない）。 */
 function mergeRemoteIntoLocal(remoteSessions){
@@ -997,20 +1079,29 @@ function mergeRemoteIntoLocal(remoteSessions){
   const byId=new Map(store.sessions.map(s=>[s.id,s]));
   let changed=false;
   remoteSessions.forEach(x=>{
-    if(!x||!x.id)return;
+    if(!x||typeof x.id!=='string'){quarantineBad('remote',x);return;}
+    /* s が配列でない共有先セッションは取り込まない（読むときに例外になるため）。
+       seen にも加えない（prune の誤認を防ぐため） */
+    if(x.s!==undefined&&!Array.isArray(x.s)){quarantineBad('remote',x);return;}
     seenRemoteIds.add(x.id);
     /* 共有先に戻ってきたセッションはトリミング扱いをやめる */
     trimmedIds.delete(x.id);
     if(!x.d)return;
+    if(typeof x.d!=='string'){quarantineBad('remote',x);return;}
     if(deletedSessionIds.has(x.id))return;
     if(byId.has(x.id))return;
-    byId.set(x.id,{id:x.id,date:x.d,type:x.t||'practice',title:x.ti||'',shots:rebuildShotMeta((x.s||[]).map(a=>({nx:a[0],ny:a[1],hit:!!a[2]})))});
+    const cleanShots=sanitizeCompactShots(x.s);
+    byId.set(x.id,{id:x.id,date:x.d,type:(typeof x.t==='string'?x.t:'practice'),title:(typeof x.ti==='string'?x.ti:''),shots:rebuildShotMeta(cleanShots.map(a=>({nx:a[0],ny:a[1],hit:!!a[2]})))});
     changed=true;
   });
   saveSeenIds();
   saveTrimmedIds();
   if(!store.sessions.length)store.sessions.push(newSess());
-  if(changed){store.sessions=[...byId.values()];store.currentId=curSession().id;shots=curSession().shots;persistStore();}
+  if(changed){
+    store.sessions=[...byId.values()];store.currentId=curSession().id;shots=curSession().shots;persistStore();
+    /* 統合で記録が増え、現在のセッションが空なら、最新の記録があるセッションを開く */
+    adoptLatestSessionIfCurrentEmpty();
+  }
   return changed;
 }
 /* 共有先で見たことがあるのに今の共有先に無いローカルセッションを削除する
@@ -1032,21 +1123,40 @@ function pruneLocalDeletedByRemote(remoteSessions){
 function compactSessions(maxBytes){
   const r=x=>Math.round(x*100)/100;
   const cap=(typeof maxBytes==='number')?maxBytes:900000;
-  const ss=store.sessions.filter(x=>x.shots.length&&(shareMode==='all'||x.type==='match'))
+  /* 形状の壊れたセッションは共有対象から外す（shots が配列でない・date が
+     ないものがあると、ここで例外が起きて共有が毎回失敗するため） */
+  const ss=store.sessions.filter(x=>{
+    if(!isValidLocalSession(x)){quarantineBad('local',x);return false;}
+    return x.shots.length&&(shareMode==='all'||x.type==='match');
+  })
     .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id))
-    .map(x=>({id:x.id,d:x.date,t:x.type,ti:(x.title||'').slice(0,40),s:x.shots.map(h=>[r(h.nx),r(h.ny),h.hit?1:0])}));
+    .map(x=>({id:x.id,d:x.date,t:(typeof x.type==='string'?x.type:'practice'),ti:String(x.title||'').slice(0,40),s:x.shots.filter(h=>h&&typeof h.nx==='number'&&typeof h.ny==='number').map(h=>[r(h.nx),r(h.ny),h.hit?1:0])}));
   let trimmed=false;
   while(ss.length>1&&JSON.stringify(ss).length>cap){const t=ss.shift();if(t&&t.id)trimmedIds.add(t.id);trimmed=true;}
   if(trimmed)saveTrimmedIds();
   return {ss,trimmed};
 }
-function scheduleShare(){if(!dbCap||!myId)return;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,1500);}
+function scheduleShare(){
+  if(!dbCap||!myId)return;
+  /* 新しい共有トリガー（タップ・スナップショット・回線復帰）では再送回数を
+     リセットする。3回失敗したあとでも、次のきっかけで再送が再開する。 */
+  shareRetries=0;
+  clearTimeout(shareTimer);shareTimer=setTimeout(doShare,1500);
+}
+/* 共有の差分判定キー（doShare とフォールバックで共通。同じ内容なら書き込まない） */
+function shareKey(keep,wConsent){return shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(wConsent||null)+'|'+JSON.stringify(keep);}
 /* ローカルと共有先のセッションを ID で和集合にする（ローカル優先）。
-   書き戻しで共有先の記録を消さないための共通処理。 */
+   書き戻しで共有先の記録を消さないための共通処理。
+   形状の壊れたもの（id が無い・s が配列でない）は入れない。 */
 function unionSessions(localSs,remoteSs){
   const byId=new Map();
-  (localSs||[]).forEach(x=>{if(x&&x.id)byId.set(x.id,x);});
-  (remoteSs||[]).forEach(x=>{if(x&&x.id&&!byId.has(x.id))byId.set(x.id,x);});
+  const add=x=>{
+    if(!isValidCompactSession(x))return;
+    if(byId.has(x.id))return;
+    byId.set(x.id,Array.isArray(x.s)?Object.assign({},x,{s:sanitizeCompactShots(x.s)}):x);
+  };
+  (localSs||[]).forEach(add);
+  (remoteSs||[]).forEach(add);
   return [...byId.values()].filter(x=>x&&!deletedSessionIds.has(x.id));
 }
 let sharePromise=null;
@@ -1059,6 +1169,8 @@ async function doShare(){
   sharing=true;
   sharePromise=(async()=>{
     try{
+      /* 試行の始めに「共有中」に戻す（古い失敗文言が残り続けないようにするため） */
+      shareStatus='共有中';
       const ref=dbCap.doc('members/'+myId),r=members[myId];
       /* 削除済みのドキュメント（墓標）には書き込まない */
       if(r&&r.deleted){shareStatus='共有は停止中です（データ削除済み）。再度同意すると共有が再開します';return;}
@@ -1073,13 +1185,19 @@ async function doShare(){
       /* 共有先のセッションと和集合にする（取り込めない日付なしセッションも含め、
          共有先にある記録を書き戻しで消さないため） */
       const keep=unionSessions(ss,remoteSessions);
-      const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(wConsent||null)+'|'+JSON.stringify(keep);
+      const key=shareKey(keep,wConsent);
       if(lastShared===null&&r&&((r.mode||'all')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.roster||{})+'|'+JSON.stringify(r.consent||null)+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
       /* merge:true で書く：プロフィールや設定済みの印を消さないため */
       if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:wConsent||null,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
-      shareRetries=0;
+      shareRetries=0;lastShareError='';
     }catch(e){
-      shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
+      /* 失敗の理由を残す（画面だけでは原因が分からないため。コードは
+         管理者診断にも出す）。permission-denied / invalid-argument だけ
+         文言を分け、それ以外はコードを併記する。 */
+      const code=(e&&e.code)||'';
+      lastShareError=code||((e&&e.message)||String(e));
+      try{console.error('doShare failed',code,lastShareError);}catch(_){}
+      shareStatus=(code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':('共有に失敗しました'+(code?'（'+code+'）':'')+'。時間をおいて再度お試しください'));
       /* 書き込み失敗時は指数バックオフで再送する（最大3回） */
       if(shareRetries<3){const d=[5000,15000,45000][shareRetries];shareRetries++;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,d);}
     }
@@ -1092,13 +1210,13 @@ function setShare(m){
   m='all';
   shareMode=m;
   try{localStorage.setItem('kyudo_share',m);}catch(e){}
-  lastShared=null;shareStatus='';scheduleShare();renderStats();
+  lastShared=null;shareStatus='';lastShareError='';scheduleShare();renderStats();
 }
-/* 回線復帰時は保留中の共有を送り直す。タブを閉じる・隠すときは保留中の共有を送る
-   （完了は保証されないが、1.5秒待たずに送れる場合がある）。 */
+/* 回線復帰時は保留中の共有を送り直す。
+   タブを隠す・閉じるときの共有はやめた（完了が保証されないタイミングで
+   呼ぶと、失敗文言だけが残るため。ログアウト時・次回ログイン時の送り出し
+   が安全網としてある）。 */
 window.addEventListener('online',()=>{scheduleShare();});
-window.addEventListener('pagehide',()=>{if(dbCap&&myId&&membersFirst){try{doShare();}catch(e){}}});
-document.addEventListener('visibilitychange',()=>{if(document.hidden&&dbCap&&myId&&membersFirst){try{doShare();}catch(e){}}});
 /* 共有の状態を一般ユーザーにも分かるように記録ページの上部に出す。
    「共有先にまだ接続できていません」はスナップショットが10秒届かないときに
    memStatus として立ち、ここで表示される。診断の「共有先 0件」は
@@ -1117,23 +1235,33 @@ function updateShareStatusLine(){
 let shareFallbackDone=false;
 async function shareFallbackOnce(){
   if(shareFallbackDone||membersFirst||!dbCap||!myId)return;
-  shareFallbackDone=true;
   try{
     const ref=dbCap.doc('members/'+myId);
     const snap=await ref.get();
+    /* get の間にスナップショットが届いたら、通常の共有に任せる */
+    if(membersFirst)return;
     const r=snap&&snap.exists?snap.data():null;
     if(r&&r.deleted)return;
     const remote=(r&&Array.isArray(r.sessions))?r.sessions:[];
     const {ss}=compactSessions();
-    if(!ss.length)return;
+    if(!ss.length){shareFallbackDone=true;return;}
     const keep=unionSessions(ss,remote);
     const wConsent=(consent&&r&&r.consent&&(r.consent.at||0)>(consent.at||0))?r.consent:consent;
     await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:wConsent||null,updated:Date.now(),sessions:keep},{merge:true});
+    /* 成功したら doShare と同じキーを入れて、次の doShare の冗長な書き込みを防ぐ */
+    lastShared=shareKey(keep,wConsent);
+    shareFallbackDone=true;
     shareStatus='共有しました';
-  }catch(e){}
+  }catch(e){
+    /* 失敗したら次回再試行できるように印を戻し、理由を残す */
+    shareFallbackDone=false;
+    lastShareError=(e&&e.code)||((e&&e.message)||String(e));
+    try{console.error('shareFallback failed',e&&e.code,e&&e.message);}catch(_){}
+    shareStatus='共有先に接続できませんでした。時間をおいて再度お試しください';
+  }
   rerender();
 }
-function rerender(){updateShareStatusLine();if(document.body.dataset.pg!=='rec')renderStats();}
+function rerender(){updateShareStatusLine();if(document.body.dataset.pg==='rec'){try{renderAll();}catch(e){}}else renderStats();}
 
 /* ---- Firebase Firestore ----
    データ設計（このアプリの既存の形そのまま）：
@@ -2057,7 +2185,7 @@ function shareCard(){
     }catch(e){}
     let owner='';
     try{owner=localStorage.getItem(OWNER_KEY)||'';}catch(e){}
-    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}<br>退避データ：${bN===null?'なし':bN+'件'}${uK?'<br>無名の退避データ：'+uN+'件（'+uK+'キー）':''}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}</p>`;
+    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}${lastShareError?'<br>直近の共有エラー：'+esc(lastShareError):''}<br>退避データ：${bN===null?'なし':bN+'件'}${uK?'<br>無名の退避データ：'+uN+'件（'+uK+'キー）':''}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}</p>`;
   }catch(e){}
   return `<div class='card'><h2>👥 メンバーと共有</h2>${btns}<p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p>${diag}<div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
 }
