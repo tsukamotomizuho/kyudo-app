@@ -143,6 +143,7 @@ input[type=file]{display:none}
   </nav>
   <div class='team-bar' id='teamBar'></div>
   <div class='auth-bar' id='authBar'></div>
+  <div class='hint-text' id='shareStatusLine' style='text-align:center;display:none'></div>
   <div class='login-gate' id='loginGate' style='display:none'></div>
   <div class='pg-trend' id='trendPage'></div>
   <div class='pg-rank' id='rankPage'></div>
@@ -253,13 +254,22 @@ function dstr(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0
 function todayStr(){return dstr(new Date());}
 function dateOfId(id){const t=Number(String(id).split('_')[0]);return t>0?dstr(new Date(t)):todayStr();}
 function newSess(date,type){return {id:'s'+Date.now()+Math.random().toString(36).slice(2,6),date:date||todayStr(),type:type||'practice',title:'',shots:[]};}
+/* 端末内データのパース失敗時は、壊れた値を別キーに退避して警告する（無言で捨てないため） */
+function safeParseStore(raw){
+  try{return JSON.parse(raw);}
+  catch(e){
+    try{localStorage.setItem('kyudo_store_corrupt_'+Date.now(),raw);}catch(err){}
+    try{alert('端末内の記録データが壊れていたため、新しい記録から始めます。壊れたデータは別に保存しました。');}catch(err){}
+    return null;
+  }
+}
 function loadStore(){
   try{
     const r=localStorage.getItem(STORE_KEY);
-    if(r){const o=JSON.parse(r);if(o&&Array.isArray(o.sessions)&&o.sessions.length)return o;}
+    if(r){const o=safeParseStore(r);if(o&&Array.isArray(o.sessions)&&o.sessions.length)return o;}
     const old=localStorage.getItem(STORAGE_KEY);
     if(old){
-      const a=JSON.parse(old);
+      const a=safeParseStore(old);
       if(Array.isArray(a)&&a.length){
         const g={};
         a.forEach(s=>{const d=dateOfId(s.id);(g[d]=g[d]||[]).push(s);});
@@ -276,6 +286,8 @@ function loadStore(){
 }
 function curSession(){return store.sessions.find(s=>s.id===store.currentId)||store.sessions[0];}
 let store=loadStore();
+/* このタブが端末内データを最後に読み書きした時刻（別タブでの消去の検出用） */
+let lastStoreSyncAt=Date.now();
 {
   store.currentId=curSession().id;
   const cs=curSession();
@@ -304,7 +316,25 @@ function loadShots(){
 function mergeStoreFromStorage(){
   let raw=null;
   try{raw=localStorage.getItem(STORE_KEY);}catch(e){}
+  /* 消去マーカー：別タブでユーザー切替による消去があった場合、このタブの
+     端末内データを統合で復活させず、保存内容をそのまま採用する */
+  try{
+    const mk=JSON.parse(localStorage.getItem('kyudo_store_cleared_v1')||'null');
+    if(mk&&mk.at&&mk.at>lastStoreSyncAt){
+      lastStoreSyncAt=Date.now();
+      if(!raw)return false;
+      const o=JSON.parse(raw);
+      if(o&&Array.isArray(o.sessions)){
+        store.sessions=o.sessions.length?o.sessions:[newSess()];
+        store.currentId=(o.currentId&&store.sessions.some(s=>s.id===o.currentId))?o.currentId:store.sessions[store.sessions.length-1].id;
+        shots=curSession().shots;
+        return true;
+      }
+      return false;
+    }
+  }catch(e){}
   if(!raw)return false;
+  lastStoreSyncAt=Date.now();
   let o=null;
   try{o=JSON.parse(raw);}catch(e){return false;}
   if(!o||!Array.isArray(o.sessions)||!o.sessions.length)return false;
@@ -331,7 +361,7 @@ function mergeStoreFromStorage(){
 let storeSaveWarned=false;
 function saveShots(){
   try{mergeStoreFromStorage();}catch(e){}
-  try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}
+  try{localStorage.setItem(STORE_KEY,JSON.stringify(store));lastStoreSyncAt=Date.now();}
   catch(e){
     shareStatus='端末への保存に失敗しました。空き容量をご確認ください';
     if(!storeSaveWarned){storeSaveWarned=true;try{alert('記録を端末に保存できませんでした。空き容量をご確認ください。');}catch(err){}}
@@ -744,7 +774,7 @@ let myTeams=[],teamInfo={},teamMsg='';
 let consent=null;
 const OWNER_KEY='kyudo_owner_uid_v1';
 /* 端末内の記録だけを保存する（共有は送らない） */
-function persistStore(){try{localStorage.setItem(STORE_KEY,JSON.stringify(store));}catch(e){}}
+function persistStore(){try{localStorage.setItem(STORE_KEY,JSON.stringify(store));lastStoreSyncAt=Date.now();}catch(e){}}
 /* 端末内のユーザー別データをすべて消す。違うユーザーでログインしたときに呼ぶ。
    共有より先に消すので、前の人のデータが新しい人の Firestore に混ざらない。 */
 function clearLocalUserData(){
@@ -756,15 +786,20 @@ function clearLocalUserData(){
   members={};membersFirst=false;st.sel=null;st.day=null;teamMsg='';profileMsg='';
   seenRemoteIds=new Set();deletedSessionIds=new Set();
   try{localStorage.removeItem(SEEN_KEY);localStorage.removeItem(DELETED_KEY);}catch(e){}
+  /* 別タブに「消去された」ことを知らせる印を残す（このタブの保存で消した記録が復活しないようにするため） */
+  try{localStorage.setItem('kyudo_store_cleared_v1',JSON.stringify({at:Date.now()}));}catch(e){}
   persistStore();saveLocalTeams();
   shareMode='all';
   try{localStorage.setItem('kyudo_share','all');}catch(e){}
 }
 /* ユーザー切替の前に、前のユーザーの端末内データを Firestore に送る。
    送れなかった記録が、切替時の消去で失われないようにするため。
-   送れなくても消去は進める（消さないと前の人のデータが新しい人に混ざるため）。 */
+   送れなくても消去は進める（消さないと前の人のデータが新しい人に混ざるため）。
+   戻り値：true=送れた、false=送れなかった（退避キーへ逃がす）、'deleted'=削除済み（墓標）のため送らない（退避もしない）。 */
 async function flushOldUserData(prevUid){
   if(!dbCap||!prevUid)return false;
+  /* 別タブで記録された分も含め、端末内の最新状態を統合してから送る */
+  try{mergeStoreFromStorage();}catch(e){}
   /* await の前に必要な値をローカル変数へ退避する（この間に消去が走っても空値を書かないため） */
   const fMode=shareMode,fTeams=myTeams.slice(),fName=myName||'',fProfile=Object.assign({},profile),fRoster=Object.assign({},localRoster),fConsent=consent?Object.assign({},consent):null;
   try{
@@ -773,17 +808,24 @@ async function flushOldUserData(prevUid){
     const ref=dbCap.doc('members/'+prevUid);
     const snap=await ref.get();
     const r=snap&&snap.exists?snap.data():null;
-    const keepRaw=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
-    const keep=keepRaw.filter(x=>x&&!deletedSessionIds.has(x.id));
+    /* 削除済み（墓標）のドキュメントには書き込まない */
+    if(r&&r.deleted)return 'deleted';
+    /* 共有先のセッションと和集合にする（端末内だけで置き換えると、
+       他端末で共有された記録が共有先から消えてしまうため） */
+    const remote=(r&&Array.isArray(r.sessions))?r.sessions:[];
+    const keep=unionSessions(ss,remote);
     await ref.set({v:2,mode:fMode,teams:fTeams,name:fName,profile:fProfile,roster:fRoster,consent:fConsent,updated:Date.now(),sessions:keep},{merge:true});
     return true;
   }catch(e){return false;}
 }
 /* 切替時に共有できなかった記録の退避先（kyudo_backup_{uid}）があれば、
    セッションだけ端末内に戻して共有し直す（名前・プロフィール・チーム・名簿・同意は復元しない）。
-   統合が終わったら退避キーを削除する（統合済みの記録は端末内に残るため）。 */
+   退避キーは1件以上復元できたときだけ消す（復元できなかった場合は次回ログインで再試行する）。 */
 function restoreBackup(uid){
   if(!uid)return 0;
+  /* 削除済み（墓標）のユーザーは復元しない（退避キーは残し、墓標が解除されたら復元する） */
+  const md=members&&members[uid];
+  if(md&&md.deleted)return 0;
   let raw=null;
   try{raw=localStorage.getItem('kyudo_backup_'+uid);}catch(e){}
   if(!raw)return 0;
@@ -798,46 +840,69 @@ function restoreBackup(uid){
         if(deletedSessionIds.has(x.id))return;
         if(byId.has(x.id))return;
         byId.set(x.id,x);n++;
+        /* 復元したセッションは prune の対象から外す（次のスナップショットで
+           また消えてしまうため。第3回監査で確定した消失メカニズムの対策） */
+        seenRemoteIds.delete(x.id);
       });
-      if(n){store.sessions=[...byId.values()];shots=curSession().shots;persistStore();}
+      if(n){store.sessions=[...byId.values()];shots=curSession().shots;persistStore();saveSeenIds();}
     }
   }catch(e){}
-  try{localStorage.removeItem('kyudo_backup_'+uid);}catch(e){}
+  if(n>0){try{localStorage.removeItem('kyudo_backup_'+uid);}catch(e){}}
   if(n){try{alert('バックアップから'+n+'件の記録を復元しました。数秒後に共有されます。');}catch(e){}try{scheduleShare();}catch(e){}}
   return n;
 }
 /* ログイン中のユーザーが前回と違う Google ユーザーなら、端末内のデータを消す。
    匿名→Google の連携（uid が変わらない場合）は引き継がれる。 */
-let authSwitching=false;
+let authSwitching=false,authSwitchingUid=null,pendingAuthUser=null;
 async function noteAuthUser(u){
-  if(!u||u.isAnonymous){authReady=true;updateTeamBar();return;}
-  /* 二重呼び出し対策：処理中は2回目を捨てる（同じサインインで2回走るため） */
-  if(authSwitching)return;
-  authSwitching=true;
+  if(!u){authReady=true;updateTeamBar();return;}
+  if(u.isAnonymous){myId=u.uid;authReady=true;updateTeamBar();return;}
+  /* 処理中に別ユーザーの切替が来たら、最新の一件をキューして後で実行する
+     （捨てると、myId だけ新ユーザーになり旧ユーザーの記録が混ざるため）。
+     同一 uid の再入（同じサインインで2回走る場合）だけ捨てる。 */
+  if(authSwitching){
+    if(u.uid===authSwitchingUid)return;
+    pendingAuthUser=u;
+    return;
+  }
+  authSwitching=true;authSwitchingUid=u.uid;
+  let err=null;
   try{
     let prev=null;try{prev=localStorage.getItem(OWNER_KEY);}catch(e){}
     const hasLocalData=!!(myName||myTeams.length||(store&&store.sessions.some(s=>s.shots&&s.shots.length)));
     if(prev&&prev!==u.uid){
       const ok=await flushOldUserData(prev);
-      /* 送れなかった場合は端末内データを別キーに退避してから消す */
-      if(!ok){try{localStorage.setItem('kyudo_backup_'+prev,JSON.stringify({name:myName,profile:profile,teams:myTeams,roster:localRoster,consent:consent,sessions:store.sessions,savedAt:Date.now()}));}catch(e){}}
+      /* 送れなかった場合は端末内データを別キーに退避してから消す
+         （墓標のユーザーは送るものがないため退避しない） */
+      if(ok===false){try{localStorage.setItem('kyudo_backup_'+prev,JSON.stringify({name:myName,profile:profile,teams:myTeams,roster:localRoster,consent:consent,sessions:store.sessions,savedAt:Date.now()}));}catch(e){}}
       clearLocalUserData();updateTeamBar();renderStats();renderAll();updateAuthBar();
     }else if(!prev&&hasLocalData){
-      /* OWNER_KEY が無いのに端末内データがある：前のユーザー不明として消す */
+      /* OWNER_KEY が無いのに端末内データがある：消す前に無名の退避キーへ逃がす
+         （前のユーザーが分からないため、uid 付きの退避キーにはできない） */
+      try{localStorage.setItem('kyudo_backup_unknown_'+Date.now(),JSON.stringify({name:myName,profile:profile,teams:myTeams,roster:localRoster,consent:consent,sessions:store.sessions,savedAt:Date.now()}));}catch(e){}
       clearLocalUserData();updateTeamBar();renderStats();renderAll();updateAuthBar();
     }
     try{localStorage.setItem(OWNER_KEY,u.uid);}catch(e){}
+    /* myId は消去が終わってから更新する（更新が先だと、端末内の旧ユーザーの
+       記録が新ユーザーの共有先に混ざるため） */
+    myId=u.uid;
     /* 切替時に共有できなかった記録の退避先があれば、このユーザー分を復元する */
     restoreBackup(u.uid);
     /* 認証が確定したのでバーを表示してよい（チームバーもここで描き直す） */
     authReady=true;updateTeamBar();
-  }finally{authSwitching=false;}
+  }catch(e){err=e;}
+  finally{authSwitching=false;authSwitchingUid=null;}
+  if(pendingAuthUser){const p=pendingAuthUser;pendingAuthUser=null;await noteAuthUser(p);}
+  if(err)throw err;
 }
 /* ---- チーム（単体HTMLでも使えるローカル登録） ----
    共有DB（claude db）が使える環境では既存のDB版を使い、
    使えない環境ではこの端末の localStorage にチームを保存する。
    招待コードは6文字。部活・コミュニティではコードを伝え合う。 */
 let localTeams=[],localRoster={},myName='',profile={};
+/* 端末内で名前・プロフィールを最後に編集した時刻（adopt で古い共有先の値に
+   上書きされないようにするため。ページを読み直すと 0 に戻る） */
+let nameUpdatedAt=0,profileUpdatedAt=0;
 try{
   const lt=JSON.parse(localStorage.getItem('kyudo_local_teams_v1')||'null');
   if(lt){
@@ -915,6 +980,11 @@ try{seenRemoteIds=new Set(JSON.parse(localStorage.getItem(SEEN_KEY)||'[]'));}cat
 try{deletedSessionIds=new Set(JSON.parse(localStorage.getItem(DELETED_KEY)||'[]'));}catch(e){}
 function saveSeenIds(){try{localStorage.setItem(SEEN_KEY,JSON.stringify([...seenRemoteIds].slice(-500)));}catch(e){}}
 function saveDeletedIds(){try{localStorage.setItem(DELETED_KEY,JSON.stringify([...deletedSessionIds].slice(-200)));}catch(e){}}
+/* 容量の都合で共有対象から外したセッションID（prune の対象から外すため永続化する） */
+const TRIMMED_KEY='kyudo_trimmed_sessions_v1';
+let trimmedIds=new Set();
+try{trimmedIds=new Set(JSON.parse(localStorage.getItem(TRIMMED_KEY)||'[]'));}catch(e){}
+function saveTrimmedIds(){try{localStorage.setItem(TRIMMED_KEY,JSON.stringify([...trimmedIds].slice(-500)));}catch(e){}}
 function markSessionDeleted(id){if(!id)return;deletedSessionIds.add(id);saveDeletedIds();}
 /* 共有で落ちた射のメタデータを、セッション内の順序から再計算する */
 function rebuildShotMeta(shots){
@@ -929,6 +999,8 @@ function mergeRemoteIntoLocal(remoteSessions){
   remoteSessions.forEach(x=>{
     if(!x||!x.id)return;
     seenRemoteIds.add(x.id);
+    /* 共有先に戻ってきたセッションはトリミング扱いをやめる */
+    trimmedIds.delete(x.id);
     if(!x.d)return;
     if(deletedSessionIds.has(x.id))return;
     if(byId.has(x.id))return;
@@ -936,6 +1008,7 @@ function mergeRemoteIntoLocal(remoteSessions){
     changed=true;
   });
   saveSeenIds();
+  saveTrimmedIds();
   if(!store.sessions.length)store.sessions.push(newSess());
   if(changed){store.sessions=[...byId.values()];store.currentId=curSession().id;shots=curSession().shots;persistStore();}
   return changed;
@@ -947,6 +1020,8 @@ function pruneLocalDeletedByRemote(remoteSessions){
   const remoteIds=new Set(remoteSessions.map(x=>x&&x.id).filter(Boolean));
   let changed=false;
   store.sessions=store.sessions.filter(s=>{
+    /* トリミングで共有対象から外れただけの記録は「削除」とみなさない */
+    if(trimmedIds.has(s.id))return true;
     if(seenRemoteIds.has(s.id)&&!remoteIds.has(s.id)){changed=true;return false;}
     return true;
   });
@@ -961,43 +1036,55 @@ function compactSessions(maxBytes){
     .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id))
     .map(x=>({id:x.id,d:x.date,t:x.type,ti:(x.title||'').slice(0,40),s:x.shots.map(h=>[r(h.nx),r(h.ny),h.hit?1:0])}));
   let trimmed=false;
-  while(ss.length>1&&JSON.stringify(ss).length>cap){ss.shift();trimmed=true;}
+  while(ss.length>1&&JSON.stringify(ss).length>cap){const t=ss.shift();if(t&&t.id)trimmedIds.add(t.id);trimmed=true;}
+  if(trimmed)saveTrimmedIds();
   return {ss,trimmed};
 }
 function scheduleShare(){if(!dbCap||!myId)return;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,1500);}
+/* ローカルと共有先のセッションを ID で和集合にする（ローカル優先）。
+   書き戻しで共有先の記録を消さないための共通処理。 */
+function unionSessions(localSs,remoteSs){
+  const byId=new Map();
+  (localSs||[]).forEach(x=>{if(x&&x.id)byId.set(x.id,x);});
+  (remoteSs||[]).forEach(x=>{if(x&&x.id&&!byId.has(x.id))byId.set(x.id,x);});
+  return [...byId.values()].filter(x=>x&&!deletedSessionIds.has(x.id));
+}
+let sharePromise=null;
 async function doShare(){
-  if(sharing){scheduleShare();return;}
+  if(sharing){scheduleShare();return sharePromise;}
   /* 初回スナップショットがまだ届いていない間は書かない。
      届く前に空の記録で上書きして、Firestore 側の記録を消すのを防ぐため。
      ただし捨てずにやり直す（捨てると、その記録が共有されないままになるため）。 */
   if(!membersFirst){scheduleShare();return;}
   sharing=true;
-  try{
-    const ref=dbCap.doc('members/'+myId),r=members[myId];
-    /* 削除済みのドキュメント（墓標）には書き込まない */
-    if(r&&r.deleted){sharing=false;return;}
-    /* 書く直前に共有先の最新セッションと統合する（他端末の記録を消さないため） */
-    const remoteSessions=(r&&Array.isArray(r.sessions))?r.sessions:[];
-    mergeRemoteIntoLocal(remoteSessions);
-    pruneLocalDeletedByRemote(remoteSessions);
-    const {ss,trimmed}=compactSessions();
-    shareStatus=ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません';
-    /* 共有先の同意がローカルより新しい場合は、古いローカル同意で書き戻さない */
-    const wConsent=(consent&&r&&r.consent&&(r.consent.at||0)>(consent.at||0))?r.consent:consent;
-    /* この端末で削除したセッションは、共有先の記録にも残さない */
-    const keepRaw=(!ss.length&&r&&Array.isArray(r.sessions)&&r.sessions.length)?r.sessions:ss;
-    const keep=keepRaw.filter(x=>x&&!deletedSessionIds.has(x.id));
-    const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(wConsent||null)+'|'+JSON.stringify(keep);
-    if(lastShared===null&&r&&((r.mode||'all')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.roster||{})+'|'+JSON.stringify(r.consent||null)+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
-    /* merge:true で書く：プロフィールや設定済みの印を消さないため */
-    if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:wConsent||null,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
-    shareRetries=0;
-  }catch(e){
-    shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
-    /* 書き込み失敗時は指数バックオフで再送する（最大3回） */
-    if(shareRetries<3){const d=[5000,15000,45000][shareRetries];shareRetries++;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,d);}
-  }
-  sharing=false;
+  sharePromise=(async()=>{
+    try{
+      const ref=dbCap.doc('members/'+myId),r=members[myId];
+      /* 削除済みのドキュメント（墓標）には書き込まない */
+      if(r&&r.deleted){shareStatus='共有は停止中です（データ削除済み）。再度同意すると共有が再開します';return;}
+      /* 書く直前に共有先の最新セッションと統合する（他端末の記録を消さないため） */
+      const remoteSessions=(r&&Array.isArray(r.sessions))?r.sessions:[];
+      mergeRemoteIntoLocal(remoteSessions);
+      pruneLocalDeletedByRemote(remoteSessions);
+      const {ss,trimmed}=compactSessions();
+      shareStatus=ss.length?(trimmed?'共有中（容量の都合で古い記録は共有されていません）':'共有中'):'共有できる記録がまだありません';
+      /* 共有先の同意がローカルより新しい場合は、古いローカル同意で書き戻さない */
+      const wConsent=(consent&&r&&r.consent&&(r.consent.at||0)>(consent.at||0))?r.consent:consent;
+      /* 共有先のセッションと和集合にする（取り込めない日付なしセッションも含め、
+         共有先にある記録を書き戻しで消さないため） */
+      const keep=unionSessions(ss,remoteSessions);
+      const key=shareMode+'|'+(myName||'')+'|'+JSON.stringify(profile)+'|'+myTeams.join(',')+'|'+JSON.stringify(localRoster)+'|'+JSON.stringify(wConsent||null)+'|'+JSON.stringify(keep);
+      if(lastShared===null&&r&&((r.mode||'all')+'|'+(r.name||'')+'|'+JSON.stringify(r.profile||{})+'|'+(r.teams||[]).join(',')+'|'+JSON.stringify(r.roster||{})+'|'+JSON.stringify(r.consent||null)+'|'+JSON.stringify(r.sessions||[]))===key)lastShared=key;
+      /* merge:true で書く：プロフィールや設定済みの印を消さないため */
+      if(key!==lastShared){await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:wConsent||null,updated:Date.now(),sessions:keep},{merge:true});lastShared=key;}
+      shareRetries=0;
+    }catch(e){
+      shareStatus=(e&&e.code==='permission-denied')?'共有できません：Firestoreのルール（firestore.rules）を適用してください':((e&&e.code==='invalid_argument')?'共有できません：このページの編集権限（Contributor以上）が必要です':'共有に失敗しました。時間をおいて再度お試しください');
+      /* 書き込み失敗時は指数バックオフで再送する（最大3回） */
+      if(shareRetries<3){const d=[5000,15000,45000][shareRetries];shareRetries++;clearTimeout(shareTimer);shareTimer=setTimeout(doShare,d);}
+    }
+  })();
+  try{await sharePromise;}finally{sharing=false;sharePromise=null;}
   rerender();
 }
 function setShare(m){
@@ -1012,7 +1099,41 @@ function setShare(m){
 window.addEventListener('online',()=>{scheduleShare();});
 window.addEventListener('pagehide',()=>{if(dbCap&&myId&&membersFirst){try{doShare();}catch(e){}}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&dbCap&&myId&&membersFirst){try{doShare();}catch(e){}}});
-function rerender(){if(document.body.dataset.pg!=='rec')renderStats();}
+/* 共有の状態を一般ユーザーにも分かるように記録ページの上部に出す。
+   「共有先にまだ接続できていません」はスナップショットが10秒届かないときに
+   memStatus として立ち、ここで表示される。診断の「共有先 0件」は
+   スナップショット未到達でも 0件と表示されるため、ここでは接続状態で区別する。 */
+function updateShareStatusLine(){
+  const el=document.getElementById('shareStatusLine');if(!el)return;
+  let msg='';
+  if(dbCap&&myId&&memStatus)msg=memStatus;
+  else if(dbCap&&myId&&shareStatus&&(/失敗|できません|停止中|容量の都合/.test(shareStatus)))msg=shareStatus;
+  el.textContent=msg;
+  el.style.display=msg?'block':'none';
+}
+/* スナップショットが一定時間届かないときのフォールバック：doc.get() で既存
+   ドキュメントを確認し、端末内を正として一度だけ書き込む。
+   共有先の記録と和集合にするので、空で上書きして消すことはない。 */
+let shareFallbackDone=false;
+async function shareFallbackOnce(){
+  if(shareFallbackDone||membersFirst||!dbCap||!myId)return;
+  shareFallbackDone=true;
+  try{
+    const ref=dbCap.doc('members/'+myId);
+    const snap=await ref.get();
+    const r=snap&&snap.exists?snap.data():null;
+    if(r&&r.deleted)return;
+    const remote=(r&&Array.isArray(r.sessions))?r.sessions:[];
+    const {ss}=compactSessions();
+    if(!ss.length)return;
+    const keep=unionSessions(ss,remote);
+    const wConsent=(consent&&r&&r.consent&&(r.consent.at||0)>(consent.at||0))?r.consent:consent;
+    await ref.set({v:2,mode:shareMode,teams:myTeams,name:myName||'',profile:profile,roster:localRoster,consent:wConsent||null,updated:Date.now(),sessions:keep},{merge:true});
+    shareStatus='共有しました';
+  }catch(e){}
+  rerender();
+}
+function rerender(){updateShareStatusLine();if(document.body.dataset.pg!=='rec')renderStats();}
 
 /* ---- Firebase Firestore ----
    データ設計（このアプリの既存の形そのまま）：
@@ -1134,8 +1255,20 @@ async function loginWithGoogle(){
 }
 async function logoutGoogle(){
   try{
-    /* ログアウト前に未共有の記録を送る（ベストエフォート、1.5秒で諦める） */
-    try{await Promise.race([doShare(),new Promise(r=>setTimeout(r,1500))]);}catch(e){}
+    /* ログアウト前に未共有の記録を送る（ベストエフォート）。
+       共有処理中ならフラグではなく進行中の書き込みの完了を待つ。 */
+    try{
+      if(sharePromise)await Promise.race([sharePromise,new Promise(r=>setTimeout(r,3000))]);
+    }catch(e){}
+    if(dbCap&&myId){
+      if(!membersFirst){
+        /* スナップショットがまだなら少しだけ待つ。届かなければ直接書き込む。 */
+        const t0=Date.now();
+        while(!membersFirst&&Date.now()-t0<2000){await new Promise(r=>setTimeout(r,100));}
+      }
+      if(membersFirst){try{await Promise.race([doShare(),new Promise(r=>setTimeout(r,1500))]);}catch(e){}}
+      else{try{await Promise.race([flushOldUserData(myId),new Promise(r=>setTimeout(r,1500))]);}catch(e){}}
+    }
     await firebase.auth().signOut();location.reload();
   }
   catch(e){authMsg='ログアウトできませんでした：'+((e&&e.message)||e);updateAuthBar();}
@@ -1146,18 +1279,33 @@ function authBarClick(e){const b=e.target.closest('button[data-auth-act]');if(!b
    （IDで重複を除く）。別の端末でつけた記録がここで読み込まれる。 */
 function adoptMembersDoc(){
   const m=members[myId];
-  /* 墓標（削除済み）のドキュメントは無視する */
-  if(!m||m.deleted)return;
+  if(!m)return;
+  /* 墓標（削除済み）のドキュメント：他端末で削除された場合、この端末の
+     端末内データも消す（未共有記録は退避キーへ逃がしてから消す）。
+     再同意すれば墓標は解除され、退避した記録は復元される。 */
+  if(m.deleted){
+    const hasData=!!(myName||myTeams.length||(store&&store.sessions.some(s=>s.shots&&s.shots.length)));
+    if(hasData){
+      try{localStorage.setItem('kyudo_backup_'+myId,JSON.stringify({name:myName,profile:profile,teams:myTeams,roster:localRoster,consent:consent,sessions:store.sessions,savedAt:Date.now()}));}catch(e){}
+      const keepMembers=members;
+      clearLocalUserData();
+      members=keepMembers;members[myId]=m;membersFirst=true;
+      updateTeamBar();renderStats();renderAll();updateAuthBar();
+    }
+    return;
+  }
   /* 共有は常にON（すべて共有）。Firestore 側が「試合のみ」でも「すべて共有」に移行する。 */
   shareMode='all';
-  /* プロフィールは項目ごとに統合：ローカルにだけあるアイコンは残す */
-  if(m.profile){
+  /* プロフィールは項目ごとに統合：ローカルにだけあるアイコンは残す。
+     ただし端末内で編集中（共有される前）の新しい値を、古い共有先の値で上書きしない */
+  if(m.profile&&!(profileUpdatedAt>(m.updated||0))){
     const oldIcon=profile.icon;
     profile=Object.assign({},m.profile);
     if(!profile.icon&&oldIcon)profile.icon=oldIcon;
   }
-  /* Firestore の名前を正とする（別端末で変えた名前もここで反映される） */
-  if(m.name)myName=m.name;
+  /* Firestore の名前を正とする（別端末で変えた名前もここで反映される）。
+     ただし端末内で編集中の新しい名前を、古い共有先の名前で上書きしない */
+  if(m.name&&!(nameUpdatedAt>(m.updated||0)))myName=m.name;
   /* 同意は共有先のほうが新しい場合だけ取り込む */
   if(m.consent&&(!consent||(m.consent.at||0)>(consent.at||0)))consent=m.consent;
   if(m.onboarded)obDone=true;
@@ -1186,18 +1334,22 @@ let membersSyncStarted=false;
 function startMembersSync(){
   if(membersSyncStarted)return;
   membersSyncStarted=true;
-  let first=true;
-  const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
+  const timer=setTimeout(()=>{memStatus='共有先にまだ接続できていません。記録はこの端末に保存されています。';rerender();},10000);
+  const fbTimer=setTimeout(()=>{shareFallbackOnce();},15000);
   dbCap.collection('members').onSnapshot(snap=>{
-    clearTimeout(timer);memStatus='';members={};
+    clearTimeout(timer);clearTimeout(fbTimer);memStatus='';members={};
     snap.docs.forEach(d=>{members[d.id]=d.data();});
-    if(first){first=false;membersFirst=true;}
+    /* スナップショットが届くたびに立てる（ユーザー切替で clearLocalUserData が
+       false に戻しても、次のスナップショットで復活させるため。初回だけだと
+       リロードなしの切替後に共有が永久に止まる） */
+    membersFirst=true;
     /* 初回だけでなく毎回、共有先の最新データを取り込む（他端末の記録・名前・チームも反映される） */
     adoptMembersDoc();
+    restoreBackup(myId);
     scheduleShare();
     checkOnboarding();
     rerender();
-  },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
+  },()=>{clearTimeout(timer);memStatus='共有先に接続できませんでした。記録はこの端末に保存されています。';rerender();});
 }
 async function initFirebase(){
   try{
@@ -1208,7 +1360,7 @@ async function initFirebase(){
     firebaseProject=cfg.projectId||'';
     const auth=firebase.auth();
     try{await auth.getRedirectResult();}catch(e){authMsg='Googleログインできませんでした：'+((e&&e.message)||e);}
-    auth.onAuthStateChanged(async u=>{if(u){if(myId!==u.uid)myId=u.uid;await noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();if(!u.isAnonymous)startMembersSync();}});
+    auth.onAuthStateChanged(async u=>{if(u){await noteAuthUser(u);if(u.displayName&&!myName){myName=u.displayName;saveLocalTeams();}updateAuthBar();if(!u.isAnonymous)startMembersSync();}});
     dbCap=firebase.firestore();
     userCap={
       id:async()=>auth.currentUser?auth.currentUser.uid:'',
@@ -1230,7 +1382,7 @@ async function initFirebase(){
       updateAuthBar();
       return true;
     }
-    myId=user.uid;
+    /* myId は noteAuthUser の中で、消去が終わってから設定される */
     await noteAuthUser(user);
     if(user.displayName&&!myName){myName=user.displayName;saveLocalTeams();}
     firebaseStatus='Firebase Firestore（'+firebaseProject+'）に接続中';
@@ -1252,20 +1404,24 @@ async function initFirebase(){
     if(!db||!user)return;
     const id=await user.id();
     if(!id)return;
-    dbCap=db;userCap=user;myId=id;
+    dbCap=db;userCap=user;
+    /* myId は noteAuthUser の中で、消去が終わってから設定される */
     await noteAuthUser({uid:id});
-    let first=true;
-    const timer=setTimeout(()=>{memStatus='メンバーのデータにまだ接続できていません';rerender();},10000);
+    const timer=setTimeout(()=>{memStatus='共有先にまだ接続できていません。記録はこの端末に保存されています。';rerender();},10000);
+    const fbTimer=setTimeout(()=>{shareFallbackOnce();},15000);
     db.collection('members').onSnapshot(snap=>{
-      clearTimeout(timer);memStatus='';members={};
+      clearTimeout(timer);clearTimeout(fbTimer);memStatus='';members={};
       snap.docs.forEach(d=>{members[d.id]=d.data();});
-      if(first){first=false;membersFirst=true;}
+      /* スナップショットが届くたびに立てる（ユーザー切替で clearLocalUserData が
+         false に戻しても、次のスナップショットで復活させるため） */
+      membersFirst=true;
       /* 初回だけでなく毎回、共有先の最新データを取り込む */
       adoptMembersDoc();
+      restoreBackup(myId);
       scheduleShare();
       checkOnboarding();
       rerender();
-    },()=>{clearTimeout(timer);memStatus='メンバーのデータを読み込めませんでした';rerender();});
+    },()=>{clearTimeout(timer);memStatus='共有先に接続できませんでした。記録はこの端末に保存されています。';rerender();});
   }catch(e){}
 })();
 
@@ -1321,7 +1477,7 @@ async function handleIconFile(file,ctx){
     URL.revokeObjectURL(url);
     const data=cv.toDataURL('image/jpeg',0.85);
     if(ctx==='onboard'){obProfile.icon=data;renderOnboard();}
-    else{profile.icon=data;saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
+    else{profile.icon=data;profileUpdatedAt=Date.now();saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
   }catch(e){
     if(ctx==='onboard'){obMsg='画像を読み込めませんでした';renderOnboard();}
     else{profileMsg='画像を読み込めませんでした';renderProfilePage();}
@@ -1653,9 +1809,11 @@ async function saveProfile(){
   const name=v('pfName').slice(0,20);
   if(!name){profileMsg='表示名を入力してください';renderProfilePage();return;}
   myName=name;
+  nameUpdatedAt=Date.now();
   const oldIcon=profile.icon;
   profile={org:v('pfOrg').slice(0,30),grade:v('pfGrade'),years:v('pfYears').slice(0,20),bio:v('pfBio').slice(0,200)};
   if(oldIcon)profile.icon=oldIcon;
+  profileUpdatedAt=Date.now();
   saveLocalTeams();
   if(dbCap&&myId){
     try{
@@ -1767,11 +1925,22 @@ async function obCreateTeam(name){
     scheduleShare();return true;
   }catch(e){return false;}
 }
+/* 墓標（削除済み）を解除する：再度同意・初回設定をしたとき、共有が再開できるようにする */
+async function clearTombstoneIfNeeded(){
+  if(!dbCap||!myId)return;
+  const m=members[myId];
+  if(!m||!m.deleted)return;
+  try{
+    await dbCap.doc('members/'+myId).set({deleted:false,updated:Date.now()},{merge:true});
+    if(members[myId])members[myId].deleted=false;
+  }catch(e){}
+}
 /* 初回ログイン時の同意。同意しない限りアプリは使えない。 */
 async function handleConsent(act){
   if(act==='back'){obStep=0;obMsg='';renderOnboard();return;}
   if(act==='decline'){obStep='declined';obMsg='';renderOnboard();return;}
   if(act!=='agree')return;
+  await clearTombstoneIfNeeded();
   consent={agreed:true,at:Date.now(),v:1};
   if(members[myId])members[myId].consent=consent;
   if(dbCap&&myId){try{await dbCap.doc('members/'+myId).set({consent:consent,updated:Date.now()},{merge:true});}catch(e){}}
@@ -1791,8 +1960,12 @@ async function withdrawConsent(){
 async function deleteMyData(){
   if(!confirm('自分のデータを削除しますか？\n記録・プロフィール・チームへの参加が Firebase から削除され、この端末の記録も消えます。自分が作ったチームは残ります。'))return;
   if(!confirm('本当に削除しますか？この操作は取り消せません。'))return;
-  /* ドキュメントは削除せず墓標を残す（別端末の共有で削除が復活しないようにするため） */
-  try{if(dbCap&&myId)await dbCap.doc('members/'+myId).set({v:2,deleted:true,deletedAt:Date.now(),sessions:[],teams:[],name:'',profile:{},roster:{},consent:null,updated:Date.now()},{merge:true});}catch(e){}
+  /* ドキュメントは削除せず墓標を残す（別端末の共有で削除が復活しないようにするため）。
+     墓標の書き込みに失敗したら中断する（削除されていないのに端末内を消さないため） */
+  if(dbCap&&myId){
+    try{await dbCap.doc('members/'+myId).set({v:2,deleted:true,deletedAt:Date.now(),sessions:[],teams:[],name:'',profile:{},roster:{},consent:null,updated:Date.now()},{merge:true});}
+    catch(e){try{alert('データの削除に失敗しました。通信状況を確認してから再度お試しください。');}catch(err){}return;}
+  }
   try{localStorage.removeItem(OWNER_KEY);}catch(e){}
   clearLocalUserData();
   try{await firebase.auth().signOut();}catch(e){}
@@ -1812,12 +1985,15 @@ async function finishOnboarding(){
     if(!await obCreateTeam(v.teamName)){obMsg='チームを作成できませんでした';obStep=2;renderOnboard();return;}
   }
   myName=name;
+  nameUpdatedAt=Date.now();
   const oldIcon=profile.icon;
   profile={org:v.org.slice(0,30),grade:v.grade,years:v.years.slice(0,20),bio:v.bio.slice(0,200)};
   if(v.icon)profile.icon=v.icon;else if(oldIcon)profile.icon=oldIcon;
+  profileUpdatedAt=Date.now();
   saveLocalTeams();
   if(dbCap&&myId){
     try{
+      await clearTombstoneIfNeeded();
       await dbCap.doc('members/'+myId).set({profile:profile,name:myName,teams:myTeams,onboarded:true,updated:Date.now()},{merge:true});
       if(members[myId])members[myId].onboarded=true;
     }catch(e){}
@@ -1831,10 +2007,11 @@ async function skipOnboarding(){
      表示名だけ入力されていたら名前として残す。 */
   const v=obProfileValues();
   const enteredName=(v.name||'').trim().slice(0,20);
-  if(enteredName)myName=enteredName;
+  if(enteredName){myName=enteredName;nameUpdatedAt=Date.now();}
   saveLocalTeams();
   if(dbCap&&myId){
     try{
+      await clearTombstoneIfNeeded();
       const payload={onboarded:true,updated:Date.now()};
       if(enteredName)payload.name=myName;
       await dbCap.doc('members/'+myId).set(payload,{merge:true});
@@ -1868,9 +2045,19 @@ function shareCard(){
     const st=shareStatus||(lastShared?'共有済み':'未共有');
     let bN=null;
     try{const b=JSON.parse(localStorage.getItem('kyudo_backup_'+myId)||'null');if(b&&Array.isArray(b.sessions))bN=b.sessions.length;}catch(e){}
+    let uN=0,uK=0;
+    try{
+      for(let i=0;i<localStorage.length;i++){
+        const k=localStorage.key(i);
+        if(k&&k.indexOf('kyudo_backup_unknown_')===0){
+          uK++;
+          try{const b=JSON.parse(localStorage.getItem(k));if(b&&Array.isArray(b.sessions))uN+=b.sessions.length;}catch(e){}
+        }
+      }
+    }catch(e){}
     let owner='';
     try{owner=localStorage.getItem(OWNER_KEY)||'';}catch(e){}
-    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}<br>退避データ：${bN===null?'なし':bN+'件'}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}</p>`;
+    diag=`<p class='hint-text' style='text-align:left'>診断：端末内の記録 ${lN}件（${lM}本）／共有先の記録 ${rN}件（${rM}本）<br>最後の共有：${esc(st)}<br>退避データ：${bN===null?'なし':bN+'件'}${uK?'<br>無名の退避データ：'+uN+'件（'+uK+'キー）':''}<br>uid：${esc(String(myId||'').slice(0,8))}／OWNER_KEY：${esc(String(owner).slice(0,8))}</p>`;
   }catch(e){}
   return `<div class='card'><h2>👥 メンバーと共有</h2>${btns}<p class='hint-text' style='text-align:left'>${firebaseProject?'🔥 Firestore（'+esc(firebaseProject)+'）に接続中。':''}記録・プロフィールは Firestore に保存され、チームのメンバーがランキングで見られます。動画は共有されません。${shareStatus?'<br><b>'+esc(shareStatus)+'</b>':''}${memStatus?'<br>'+esc(memStatus):''}${firebaseStatus?'<br>'+esc(firebaseStatus):''}</p>${diag}<div class='sess-row'><button data-fb-act='clear'>Firebase設定を外す</button></div></div>`;
 }
@@ -1925,7 +2112,7 @@ document.getElementById('profilePage').addEventListener('click',e=>{
   else if(b.dataset.pfAct==='withdraw')withdrawConsent();
   else if(b.dataset.pfAct==='deleteData')deleteMyData();
   else if(b.dataset.pfAct==='showConsent'){obStep=0;obMsg='';renderOnboard();}
-  else if(b.dataset.pfAct==='removeIcon'){delete profile.icon;saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
+  else if(b.dataset.pfAct==='removeIcon'){delete profile.icon;profileUpdatedAt=Date.now();saveLocalTeams();scheduleShare();updateAuthBar();renderProfilePage();}
 });
 document.getElementById('profilePage').addEventListener('change',e=>{
   const f=e.target.closest('input[type=file]#pfIconFile');
@@ -1976,7 +2163,7 @@ document.getElementById('loginGate').addEventListener('click',authBarClick);
     const ta=e.target.closest('button[data-team-act]');if(ta){
       if(ta.dataset.teamAct==='create')createTeam();
       else if(ta.dataset.teamAct==='join')joinTeam();
-      else if(ta.dataset.teamAct==='saveName'){const x=document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);saveLocalTeams();if(dbCap&&myId){dbCap.doc('members/'+myId).set({name:myName,updated:Date.now()},{merge:true}).catch(()=>{});}teamMsg=myName?'表示名を「'+myName+'」にしました':'';scheduleShare();updateAuthBar();renderStats();}
+      else if(ta.dataset.teamAct==='saveName'){const x=document.getElementById('myNameInput');myName=((x&&x.value)||'').trim().slice(0,20);nameUpdatedAt=Date.now();saveLocalTeams();if(dbCap&&myId){dbCap.doc('members/'+myId).set({name:myName,updated:Date.now()},{merge:true}).catch(()=>{});}teamMsg=myName?'表示名を「'+myName+'」にしました':'';scheduleShare();updateAuthBar();renderStats();}
       else if(ta.dataset.teamAct==='addMember'){const x=document.getElementById('memberName');const n=((x&&x.value)||'').trim().slice(0,20);if(!n){teamMsg='追加する名前を入力してください';renderStats();return;}addRosterMember(n);}
       return;}
     const r=e.target.closest('[data-uid]');if(r){st.member=r.dataset.uid;renderStats();window.scrollTo(0,0);}
